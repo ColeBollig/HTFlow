@@ -1,0 +1,17 @@
+# Annoying MacOS filesystem metadata files
+*.DS_STORE
+
+# python cached files
+__pycache__
+
+# vscode files
+.vscode/
+
+# CMake stuff
+*.cmake
+CMakeFiles
+CMakeCache.txt
+MakeFile
+
+# Python install data
+*.egg-info

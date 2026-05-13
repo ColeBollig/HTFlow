@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "htflow"
+version = "0.1.0"
+description = "Experimental data flow runner built specifically to integrate with HTCondor"
+requires-python = ">=3.8"
+dependencies = [
+    "htcondor",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["htflow*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
