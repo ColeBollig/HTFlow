@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test on ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Edit this list to add or remove target operating systems ──────────
+          # GitHub-hosted runner (no container field):
+          #   runner: macos-latest | ubuntu-latest | windows-latest
+          # Container on ubuntu-latest (set both runner and container):
+          #   runner: ubuntu-latest
+          #   container: <image>:<tag>
+          # ─────────────────────────────────────────────────────────────────────
+          - name: macOS
+            runner: macos-latest
+          - name: Ubuntu
+            runner: ubuntu-latest
+          - name: Fedora
+            runner: ubuntu-latest
+            container: fedora:latest
+          - name: AlmaLinux
+            runner: ubuntu-latest
+            container: almalinux:latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Container images don't ship with pip; install Python tooling via dnf.
+      # Both Fedora and AlmaLinux use dnf, so one step covers both.
+      - name: Install Python and pip (container)
+        if: matrix.container
+        run: dnf install -y python3 python3-pip
+
+      - name: Set up Python (native runner)
+        if: "!matrix.container"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install package and test dependencies
+        run: python3 -m pip install pytest -e .
+
+      - name: Run tests
+        run: python3 -m pytest
