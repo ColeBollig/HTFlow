@@ -15,9 +15,30 @@
 import sys
 
 # htcondor only publishes Linux wheels. On platforms where it isn't installed
-# (e.g. macOS CI), inject a mock so that test collection and import succeed.
+# (e.g. macOS CI), inject a minimal stub so that test collection and the
+# dataflow logic work correctly without the real package.
 try:
     import htcondor2
 except ImportError:
     from unittest.mock import MagicMock
-    sys.modules["htcondor2"] = MagicMock()
+
+    class _Submit:
+        """Minimal stand-in for htcondor2.Submit that parses key=value pairs."""
+
+        def __init__(self, text: str):
+            self._data = {}
+            for line in text.splitlines():
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    key, _, value = line.partition("=")
+                    self._data[key.strip().lower()] = value.strip()
+
+        def get(self, key: str):
+            return self._data.get(key.lower())
+
+        def expand(self, key: str):
+            return self._data.get(key.lower(), "")
+
+    _mock = MagicMock()
+    _mock.Submit = _Submit
+    sys.modules["htcondor2"] = _mock
