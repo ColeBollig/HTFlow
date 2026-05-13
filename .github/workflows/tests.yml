@@ -33,7 +33,7 @@ jobs:
             container: almalinux:latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Container images don't ship with pip; install Python tooling via dnf.
       # Both Fedora and AlmaLinux use dnf, so one step covers both.
@@ -43,12 +43,17 @@ jobs:
 
       - name: Set up Python (native runner)
         if: "!matrix.container"
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
       - name: Install package and test dependencies
         run: python3 -m pip install pytest -e .
+
+      # htcondor only publishes Linux wheels; skip on macOS
+      - name: Install htcondor (Linux only)
+        if: runner.os == 'Linux'
+        run: python3 -m pip install htcondor
 
       - name: Run tests
         run: python3 -m pytest
