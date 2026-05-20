@@ -12,6 +12,7 @@ __pycache__
 CMakeFiles
 CMakeCache.txt
 MakeFile
+**/build/
 
 # Python install data
 *.egg-info
