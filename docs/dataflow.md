@@ -70,9 +70,9 @@ HTCondorDataFlow(
 
 After `generate()` is called, `groupings` classifies every tracked file:
 
-- **Roots** — produced by a node and not consumed by any other node in the set
+- **Roots** — consumed by a node but not produced by any node in the set (external inputs)
 - **Intermediate** — produced by one node and consumed by at least one other node
-- **Leafs** — consumed by a node but not produced by any node in the set (external inputs)
+- **Leafs** — produced by a node and not consumed by any other node in the set (terminal outputs)
 
 ### Methods
 

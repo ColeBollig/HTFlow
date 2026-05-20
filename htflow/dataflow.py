@@ -124,9 +124,9 @@ class HTCondorDataFlow():
             if src is not None and len(dependencies) > 0:
                 intermediate.append(fname)
             elif src is not None:
-                roots.append(fname)
-            else:
                 leafs.append(fname)
+            else:
+                roots.append(fname)
 
         return (roots, intermediate, leafs)
 

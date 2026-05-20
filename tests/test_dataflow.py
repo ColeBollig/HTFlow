@@ -325,19 +325,19 @@ class TestGroupings:
         roots, intermediate, leafs = df.groupings
         assert roots == [] and intermediate == [] and leafs == []
 
-    def test_unconsumed_output_is_root(self, make_sub):
+    def test_unconsumed_output_is_leaf(self, make_sub):
         a = make_sub("a", outputs=["orphan.txt"])
         df = HTCondorDataFlow(files=[a])
         df.generate()
-        roots, _, _ = df.groupings
-        assert Path("orphan.txt") in roots
+        _, _, leafs = df.groupings
+        assert Path("orphan.txt") in leafs
 
-    def test_external_input_is_leaf(self, make_sub):
+    def test_external_input_is_root(self, make_sub):
         a = make_sub("a", inputs=["ext.txt"])
         df = HTCondorDataFlow(files=[a])
         df.generate()
-        _, _, leafs = df.groupings
-        assert Path("ext.txt") in leafs
+        roots, _, _ = df.groupings
+        assert Path("ext.txt") in roots
 
     def test_shared_file_is_intermediate(self, make_sub):
         a = make_sub("a", outputs=["mid.txt"])
@@ -353,9 +353,9 @@ class TestGroupings:
         df = HTCondorDataFlow(files=[a, b])
         df.generate()
         roots, intermediate, leafs = df.groupings
-        assert Path("orphan.txt") in roots
+        assert Path("ext.txt") in roots
         assert Path("mid.txt") in intermediate
-        assert Path("ext.txt") in leafs
+        assert Path("orphan.txt") in leafs
 
 
 # ---------------------------------------------------------------------------
