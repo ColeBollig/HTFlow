@@ -12,6 +12,9 @@ dependencies = []
 [project.optional-dependencies]
 htcondor = ["htcondor"]
 
+[project.scripts]
+htflow = "htflow.__main__:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["htflow*"]
