@@ -20,27 +20,6 @@ from htflow.utils.directory import ChangeDir
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def make_sub(tmp_path):
-    def _make(name, *, inputs=None, outputs=None, extra=""):
-        lines = ["executable = example.sh"]
-        if inputs:
-            lines.append(f"transfer_input_files = {','.join(inputs)}")
-        if outputs:
-            lines.append(f"transfer_output_files = {','.join(outputs)}")
-        if extra:
-            lines.append(extra)
-        lines.append("queue")
-        p = tmp_path / f"{name}.sub"
-        p.write_text("\n".join(lines) + "\n")
-        return p
-    return _make
-
-
-# ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
 

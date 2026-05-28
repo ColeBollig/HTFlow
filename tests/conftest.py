@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 import sys
+import shutil
+import pytest
+from pathlib import Path
 
 # htcondor only publishes Linux wheels. On platforms where it isn't installed
 # (e.g. macOS CI), inject a minimal stub so that test collection and the
@@ -52,3 +56,35 @@ except ImportError:
     _mock = MagicMock()
     _mock.Submit = _Submit
     sys.modules["htcondor2"] = _mock
+
+
+@pytest.fixture
+def tmp_path(request):
+    """Override pytest's built-in tmp_path: use tests/execution/<Class>__<test>/ so
+    per-test logs are easy to inspect after a run. The directory is wiped at the
+    START of each test (not at teardown) so artifacts are preserved on failure."""
+    tests_dir = Path(__file__).parent
+    cls  = (request.cls.__name__ + "__") if request.cls else ""
+    name = re.sub(r"[^\w]", "_", cls + request.node.name)
+    path = tests_dir / "execution" / name
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
+    return path
+
+
+@pytest.fixture
+def make_sub(tmp_path):
+    def _make(name, *, inputs=None, outputs=None, extra=""):
+        lines = ["executable = example.sh"]
+        if inputs:
+            lines.append(f"transfer_input_files = {','.join(inputs)}")
+        if outputs:
+            lines.append(f"transfer_output_files = {','.join(outputs)}")
+        if extra:
+            lines.append(extra)
+        lines.append("queue")
+        p = tmp_path / f"{name}.sub"
+        p.write_text("\n".join(lines) + "\n")
+        return p
+    return _make
