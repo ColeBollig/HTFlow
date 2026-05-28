@@ -29,11 +29,12 @@ import copy
 
 from pathlib import Path
 from time import ctime
-from typing import List, Dict, Tuple, Union, Optional, Final
+from typing import List, Dict, Tuple, Set, Union, Optional, Final
 
 class Assumption(enum.Enum):
     """Enumeration of enforcable assumptions"""
     SINGLE_FILE_SRC = 1
+    COMPLETE_LIST = 2
     NO_MACROS = 3
     NO_DIRECTORIES = 4
     NO_URL = 5
@@ -51,16 +52,30 @@ class HTCondorDataFlow():
     based on the dependencies of the described output to input files.
     """
 
-    def __init__(self, files: List[Union[Path, str]] = [], filename: str = "dataflow.dag") -> None:
+    KEY_JOB_TYPE = "JobType"
+    KEY_INPUT_FILES = "InputFiles"
+    KEY_OUTPUT_FILES = "OutputFiles"
+
+    def __init__(self,
+                 files: List[Union[Path, str]] = [],
+                 filename: str = "dataflow.dag",
+                 job_shapes: Dict[str, Dict[str, str]] = None
+    ) -> None:
         if not isinstance(files, list) or any([not isinstance(f, (Path, str)) for f in files]):
             raise ValueError("files must be a list of strings and/or pathlib.Path objects")
         if not isinstance(filename, str):
             raise ValueError("filename must be a string")
+        if job_shapes is None:
+            job_shapes = {}
+        self.__verify_new_types(job_shapes)
 
         # List of JDL files to process. Note: list position is node id number
         self._files = [Path(f) for f in files]
         # Filename of DAG to write
         self._filename = filename
+
+        # Mapping of job types -> shapes (input/output lists)
+        self._job_type_shapes = job_shapes
 
         # Table: Output file -> (Source Node | Dependency Nodes)
         self._f2n_table = {}
@@ -108,6 +123,45 @@ class HTCondorDataFlow():
         self._filename = value
 
     @property
+    def shapes(self) -> Dict[str, Dict[str, str]]:
+        """Get mapping of JDL job types job shape information pertinent to dataflow logic"""
+        return self._job_type_shapes
+
+    @shapes.setter
+    def shapes(self, val: Dict[str, Dict[str, str]]) -> None:
+        self.__verify_new_types(val)
+        self._job_type_shapes = val
+
+    @staticmethod
+    def __verify_new_types(verify: Dict[str, Dict[str, str]]) -> None:
+        """Verify incoming job type attribute information"""
+        # Expect { Abitrary Name -> { JDL Key -> Value}} e.g. { foo -> { transfer_input_files -> "foo.txt,bar.txt" }}
+        if not isinstance(verify, dict):
+            raise ValueError("Dataflow types must be a dictionary")
+
+        for key, val in verify.items():
+            if not isinstance(key, str):
+                raise ValueError("Dataflow types dictionary expects string keys")
+            elif not isinstance(val, dict):
+                raise ValueError("Dataflow types dictionary expects dictionary for values")
+
+            for k, v in val.items():
+                if not isinstance(k, str) or not isinstance(v, str):
+                    raise ValueError("Dataflow types per type dictionary expects only string values")
+
+    @property
+    def types(self) -> Set[str]:
+        types = set()
+        for jdl in self._files:
+            with open(jdl, "r") as f:
+                desc = htcondor2.Submit(f.read())
+                t = desc.get(HTCondorDataFlow.KEY_JOB_TYPE)
+                if t is not None:
+                    types.add(t)
+
+        return types
+
+    @property
     def mapping(self) -> Dict[Path, Tuple[Optional[int], Optional[List[int]]]]:
         """Get general mapping of output file to node information"""
         return self._f2n_table
@@ -150,7 +204,7 @@ class HTCondorDataFlow():
             node = self._dag.AddNode(f"NODE-{i}")
             node.internal = jdl
 
-        def process_transfer_list(desc: htcondor2.Submit, key: str, jdl: Path) -> list:
+        def process_transfer_list(desc: htcondor2.Submit, key: str, jdl: Path, errkey: Optional[str] = None) -> list:
             if desc.get(key) is None:
                 return []
             # Give a chance for simple macro expansion to resolve
@@ -158,10 +212,13 @@ class HTCondorDataFlow():
             if value is None or len(value) == 0:
                 return []
 
+            if not errkey:
+                errkey = key
+
             if "://" in value:
-                raise AssumptionError(f"{key} contains URLs", Assumption.NO_URL, jdl)
+                raise AssumptionError(f"{errkey} contains URLs", Assumption.NO_URL, jdl)
             elif "$(" in value:
-                raise AssumptionError(f"{key} contains macro substitutions", Assumption.NO_MACROS, jdl)
+                raise AssumptionError(f"{errkey} contains macro substitutions", Assumption.NO_MACROS, jdl)
 
             return [v.strip() for v in value.split(",") if len(v.strip()) > 0]
 
@@ -180,6 +237,33 @@ class HTCondorDataFlow():
 
                 infiles = process_transfer_list(desc, "transfer_input_files", node.internal)
                 outfiles = process_transfer_list(desc, "transfer_output_files", node.internal)
+
+                # Extend transfer lists to include specific job type shape information
+                job_type = desc.get(HTCondorDataFlow.KEY_JOB_TYPE)
+                if job_type is not None:
+                    if job_type not in self._job_type_shapes:
+                        raise AssumptionError(f"No knowledge of job type '{job_type}'", Assumption.COMPLETE_LIST, node.internal)
+
+                    SHAPE = htcondor2.Submit(self._job_type_shapes[job_type])
+                    had_change = False
+
+                    if HTCondorDataFlow.KEY_INPUT_FILES in self._job_type_shapes[job_type]:
+                        had_change = True
+                        inputs = process_transfer_list(SHAPE, HTCondorDataFlow.KEY_INPUT_FILES, node.internal, f"Job type '{job_type}' input file list")
+                        infiles = list(dict.fromkeys(infiles + inputs))
+                        desc["transfer_input_files"] = ",".join(infiles)
+
+                    if HTCondorDataFlow.KEY_OUTPUT_FILES in self._job_type_shapes[job_type]:
+                        had_change = True
+                        outputs = process_transfer_list(SHAPE, HTCondorDataFlow.KEY_OUTPUT_FILES, node.internal, f"Job type '{job_type}' output file list")
+                        outfiles = list(dict.fromkeys(outfiles + outputs))
+                        desc["transfer_output_files"] = ",".join(outfiles)
+
+                    if had_change:
+                        new_jdl = node.internal.with_suffix(node.internal.suffix + ".resolved")
+                        with open(new_jdl, "w") as f:
+                            f.write(str(desc))
+                        node.internal = new_jdl
 
             # Process output file list
             for f in outfiles:

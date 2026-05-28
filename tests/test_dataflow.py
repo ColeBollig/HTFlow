@@ -49,6 +49,27 @@ class TestInit:
         df = HTCondorDataFlow()
         assert df.files == []
         assert df.filename == "dataflow.dag"
+        assert df.shapes == {}
+
+    def test_custom_job_shapes_stored(self):
+        shapes = {"worker": {"InputFiles": "a.txt"}}
+        assert HTCondorDataFlow(job_shapes=shapes).shapes == shapes
+
+    def test_invalid_job_shapes_not_dict(self):
+        with pytest.raises(ValueError):
+            HTCondorDataFlow(job_shapes="bad")
+
+    def test_invalid_job_shapes_key_not_string(self):
+        with pytest.raises(ValueError):
+            HTCondorDataFlow(job_shapes={1: {"InputFiles": "a.txt"}})
+
+    def test_invalid_job_shapes_value_not_dict(self):
+        with pytest.raises(ValueError):
+            HTCondorDataFlow(job_shapes={"worker": "flat"})
+
+    def test_invalid_job_shapes_nested_value_not_string(self):
+        with pytest.raises(ValueError):
+            HTCondorDataFlow(job_shapes={"worker": {"InputFiles": 42}})
 
     def test_file_list_strings_and_paths(self, tmp_path):
         f = tmp_path / "a.sub"
@@ -70,6 +91,53 @@ class TestInit:
     def test_invalid_filename_type(self):
         with pytest.raises(ValueError):
             HTCondorDataFlow(filename=42)
+
+
+# ---------------------------------------------------------------------------
+# shapes property
+# ---------------------------------------------------------------------------
+
+class TestShapesProperty:
+    def test_getter_returns_stored_shapes(self):
+        shapes = {"mytype": {"OutputFiles": "out.txt"}}
+        assert HTCondorDataFlow(job_shapes=shapes).shapes == shapes
+
+    def test_setter_replaces_shapes(self):
+        df = HTCondorDataFlow()
+        shapes = {"mytype": {"InputFiles": "in.txt"}}
+        df.shapes = shapes
+        assert df.shapes == shapes
+
+    def test_setter_invalid_raises(self):
+        with pytest.raises(ValueError):
+            HTCondorDataFlow().shapes = "not a dict"
+
+
+# ---------------------------------------------------------------------------
+# types property
+# ---------------------------------------------------------------------------
+
+class TestTypesProperty:
+    def test_empty_when_no_files(self):
+        assert HTCondorDataFlow().types == set()
+
+    def test_empty_when_no_job_type_key(self, make_sub):
+        f = make_sub("a", outputs=["x.txt"])
+        assert HTCondorDataFlow(files=[f]).types == set()
+
+    def test_single_type(self, make_sub):
+        f = make_sub("a", extra="JobType = worker")
+        assert HTCondorDataFlow(files=[f]).types == {"worker"}
+
+    def test_multiple_distinct_types(self, make_sub):
+        a = make_sub("a", extra="JobType = alpha")
+        b = make_sub("b", extra="JobType = beta")
+        assert HTCondorDataFlow(files=[a, b]).types == {"alpha", "beta"}
+
+    def test_deduplicates_same_type(self, make_sub):
+        a = make_sub("a", extra="JobType = worker")
+        b = make_sub("b", extra="JobType = worker")
+        assert HTCondorDataFlow(files=[a, b]).types == {"worker"}
 
 
 # ---------------------------------------------------------------------------
@@ -561,3 +629,94 @@ class TestWrite:
         HTCondorDataFlow(files=[a, b], filename=str(dag_path)).write()
         content = dag_path.read_text()
         assert "# Node relationships determined by dataflow:" in content
+
+
+# ---------------------------------------------------------------------------
+# Job type shapes
+# ---------------------------------------------------------------------------
+
+class TestJobTypeShapes:
+    def test_unknown_job_type_raises_complete_list(self, make_sub):
+        f = make_sub("a", extra="JobType = unknown")
+        with pytest.raises(AssumptionError) as exc:
+            HTCondorDataFlow(files=[f], job_shapes={}).generate()
+        assert exc.value.assumption == Assumption.COMPLETE_LIST
+
+    def test_known_job_type_no_error(self, make_sub):
+        f = make_sub("a", extra="JobType = worker")
+        HTCondorDataFlow(files=[f], job_shapes={"worker": {}}).generate()
+
+    def test_no_job_type_key_unaffected_by_shapes(self, make_sub):
+        f = make_sub("a", outputs=["x.txt"])
+        HTCondorDataFlow(files=[f], job_shapes={"worker": {"OutputFiles": "extra.txt"}}).generate()
+
+    def test_shape_output_creates_dag_edge(self, make_sub):
+        a = make_sub("a", extra="JobType = worker")
+        b = make_sub("b", inputs=["result.txt"])
+        shapes = {"worker": {"OutputFiles": "result.txt"}}
+        d = HTCondorDataFlow(files=[a, b], job_shapes=shapes).generate()
+        assert d[1].id in d[0].children
+
+    def test_shape_input_added_as_external_dependency(self, make_sub):
+        a = make_sub("a", extra="JobType = worker")
+        shapes = {"worker": {"InputFiles": "extra_in.txt"}}
+        df = HTCondorDataFlow(files=[a], job_shapes=shapes)
+        df.generate()
+        roots, _, _ = df.groupings
+        assert Path("extra_in.txt") in roots
+
+    def test_shape_deduplicates_files_already_in_jdl(self, make_sub):
+        a = make_sub("a", inputs=["shared.txt"], extra="JobType = worker")
+        shapes = {"worker": {"InputFiles": "shared.txt"}}
+        df = HTCondorDataFlow(files=[a], job_shapes=shapes)
+        df.generate()
+        _, deps = df.mapping[Path("shared.txt")]
+        assert deps.count(0) == 1
+
+    def test_resolved_jdl_written_when_shape_changes(self, make_sub):
+        a = make_sub("a", extra="JobType = worker")
+        shapes = {"worker": {"OutputFiles": "result.txt"}}
+        d = HTCondorDataFlow(files=[a], job_shapes=shapes).generate()
+        resolved = a.with_suffix(a.suffix + ".resolved")
+        assert resolved.exists()
+        assert d[0].internal == resolved
+
+    def test_no_resolved_jdl_when_shape_has_no_file_keys(self, make_sub):
+        a = make_sub("a", extra="JobType = worker")
+        d = HTCondorDataFlow(files=[a], job_shapes={"worker": {}}).generate()
+        assert not a.with_suffix(a.suffix + ".resolved").exists()
+        assert d[0].internal == a
+
+    def test_url_in_shape_input_raises(self, make_sub):
+        a = make_sub("a", extra="JobType = worker")
+        shapes = {"worker": {"InputFiles": "http://host/file.txt"}}
+        with pytest.raises(AssumptionError) as exc:
+            HTCondorDataFlow(files=[a], job_shapes=shapes).generate()
+        assert exc.value.assumption == Assumption.NO_URL
+
+    def test_url_in_shape_output_raises(self, make_sub):
+        a = make_sub("a", extra="JobType = worker")
+        shapes = {"worker": {"OutputFiles": "s3://bucket/file.txt"}}
+        with pytest.raises(AssumptionError) as exc:
+            HTCondorDataFlow(files=[a], job_shapes=shapes).generate()
+        assert exc.value.assumption == Assumption.NO_URL
+
+    def test_shape_both_input_and_output_files(self, make_sub):
+        a = make_sub("a", extra="JobType = worker")
+        b = make_sub("b", inputs=["result.txt"])
+        shapes = {"worker": {"InputFiles": "external.txt", "OutputFiles": "result.txt"}}
+        df = HTCondorDataFlow(files=[a, b], job_shapes=shapes)
+        d = df.generate()
+        assert d[1].id in d[0].children
+        roots, _, _ = df.groupings
+        assert Path("external.txt") in roots
+
+    def test_generate_idempotent_with_shapes(self, make_sub):
+        a = make_sub("a", extra="JobType = worker")
+        b = make_sub("b", inputs=["result.txt"])
+        shapes = {"worker": {"OutputFiles": "result.txt"}}
+        df = HTCondorDataFlow(files=[a, b], job_shapes=shapes)
+        d1 = df.generate()
+        d2 = df.generate()
+        assert d1[1].id in d1[0].children
+        assert d2[1].id in d2[0].children

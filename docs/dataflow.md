@@ -10,15 +10,14 @@ The module works by reading `transfer_input_files` and `transfer_output_files` f
 
 The dataflow analysis enforces six assumptions about the submit files it processes. Violating any of them raises an `AssumptionError`.
 
-| # | `Assumption` member  | Constraint                                                                 |
-|---|----------------------|----------------------------------------------------------------------------|
-| 1 | `SINGLE_FILE_SRC`    | Each output file is produced by exactly one node                           |
-| 3 | `NO_MACROS`          | No unresolved `$(...)` macro substitutions in file transfer lists          |
-| 4 | `NO_DIRECTORIES`     | `output_directory` is not set                                              |
-| 5 | `NO_URL`             | No `://` URLs in file lists; `output_destination` is not set               |
-| 6 | `NO_REMAPS`          | `transfer_output_remaps` is not set                                        |
-
-> **Note:** Assumption 2 (complete file lists) is enforced implicitly — only the files explicitly listed are considered when building the dependency graph.
+| # | `Assumption` member  | Constraint                                                                                        |
+|---|----------------------|---------------------------------------------------------------------------------------------------|
+| 1 | `SINGLE_FILE_SRC`    | Each output file is produced by exactly one node                                                  |
+| 2 | `COMPLETE_LIST`      | When a job declares a `JobType`, a matching entry must exist in the `job_shapes` mapping          |
+| 3 | `NO_MACROS`          | No unresolved `$(...)` macro substitutions in file transfer lists                                 |
+| 4 | `NO_DIRECTORIES`     | `output_directory` is not set                                                                     |
+| 5 | `NO_URL`             | No `://` URLs in file lists; `output_destination` is not set                                      |
+| 6 | `NO_REMAPS`          | `transfer_output_remaps` is not set                                                               |
 
 ---
 
@@ -47,24 +46,28 @@ Assumption <N> Violated: <description> in <path>
 ```python
 HTCondorDataFlow(
     files: List[Union[Path, str]] = [],
-    filename: str = "dataflow.dag"
+    filename: str = "dataflow.dag",
+    job_shapes: Dict[str, Dict[str, str]] = {}
 )
 ```
 
-| Parameter  | Type                     | Description                                          |
-|------------|--------------------------|------------------------------------------------------|
-| `files`    | `list` of `Path`/`str`   | HTCondor submit files to analyse                     |
-| `filename` | `str`                    | Output path for the generated DAGMan file            |
+| Parameter    | Type                          | Description                                                        |
+|--------------|-------------------------------|--------------------------------------------------------------------|
+| `files`      | `list` of `Path`/`str`        | HTCondor submit files to analyse                                   |
+| `filename`   | `str`                         | Output path for the generated DAGMan file                          |
+| `job_shapes` | `dict[str, dict[str, str]]`   | Job type shape definitions; see [Job Type Shapes](#job-type-shapes)|
 
 ### Properties
 
-| Property    | Type                                                              | Description                                                    |
-|-------------|-------------------------------------------------------------------|----------------------------------------------------------------|
-| `files`     | `List[Path]`                                                      | Current list of JDL files (also settable)                      |
-| `filename`  | `str`                                                             | Output DAG filename (also settable)                            |
-| `dag`       | `Optional[dag.Dag]`                                               | The internal DAG, populated after calling `generate()`         |
-| `mapping`   | `Dict[Path, Tuple[Optional[int], Optional[List[int]]]]`          | Maps each file to `(source_node_id, [dependent_node_ids])`     |
-| `groupings` | `Tuple[List[Path], List[Path], List[Path]]`                       | Files grouped as `(roots, intermediate, leafs)` — see below    |
+| Property     | Type                                                             | Description                                                    |
+|--------------|------------------------------------------------------------------|----------------------------------------------------------------|
+| `files`      | `List[Path]`                                                     | Current list of JDL files (also settable)                      |
+| `filename`   | `str`                                                            | Output DAG filename (also settable)                            |
+| `shapes`     | `Dict[str, Dict[str, str]]`                                      | Job type shape definitions (also settable)                     |
+| `types`      | `Set[str]`                                                       | Set of distinct `JobType` values found across all JDL files    |
+| `dag`        | `Optional[dag.Dag]`                                              | The internal DAG, populated after calling `generate()`         |
+| `mapping`    | `Dict[Path, Tuple[Optional[int], Optional[List[int]]]]`         | Maps each file to `(source_node_id, [dependent_node_ids])`     |
+| `groupings`  | `Tuple[List[Path], List[Path], List[Path]]`                      | Files grouped as `(roots, intermediate, leafs)` — see below    |
 
 #### File groupings
 
@@ -157,6 +160,60 @@ JOB NODE-2 report.sub
 PARENT NODE-0 CHILD NODE-1
 PARENT NODE-1 CHILD NODE-2
 ```
+
+---
+
+## Job Type Shapes
+
+Some jobs share a fixed set of input or output files that are implicit to their job type rather than listed in every submit file. The `job_shapes` parameter lets you declare these per-type file lists so they are merged into the dataflow analysis automatically.
+
+### Shape dictionary format
+
+```python
+job_shapes = {
+    "<JobType value>": {
+        "InputFiles":  "<comma-separated file list>",  # optional
+        "OutputFiles": "<comma-separated file list>",  # optional
+    },
+    ...
+}
+```
+
+Both `InputFiles` and `OutputFiles` are optional within a type entry. Any files listed are merged (deduplicated) with the files already declared in the submit file before dependency edges are built.
+
+### Behaviour during `generate()` / `write()`
+
+1. If a JDL file contains `JobType = <name>`, `<name>` must appear as a key in `job_shapes` — otherwise `AssumptionError(COMPLETE_LIST)` is raised.
+2. Files from the matching shape entry are merged into the node's transfer lists.
+3. The same URL and macro assumptions (NO_URL, NO_MACROS) apply to shape file lists.
+4. When a shape changes a node's transfer lists, the resolved submit description is written to a `.resolved` file alongside the original JDL, and the DAG node's internal path is updated to point at it.
+
+### Example
+
+```python
+# fetch.sub declares:  JobType = downloader
+# process.sub declares: transfer_input_files = raw.csv
+#                        transfer_output_files = result.json
+# report.sub declares:  transfer_input_files = result.json
+
+from htflow.dataflow import HTCondorDataFlow
+
+shapes = {
+    "downloader": {
+        # every downloader job implicitly produces raw.csv
+        "OutputFiles": "raw.csv",
+    }
+}
+
+df = HTCondorDataFlow(
+    files=["fetch.sub", "process.sub", "report.sub"],
+    filename="pipeline.dag",
+    job_shapes=shapes,
+)
+df.write()
+```
+
+This produces the same `PARENT NODE-0 CHILD NODE-1` / `PARENT NODE-1 CHILD NODE-2` DAG as if `fetch.sub` had `transfer_output_files = raw.csv` written explicitly.
 
 ---
 

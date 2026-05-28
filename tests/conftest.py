@@ -25,19 +25,29 @@ except ImportError:
     class _Submit:
         """Minimal stand-in for htcondor2.Submit that parses key=value pairs."""
 
-        def __init__(self, text: str):
+        def __init__(self, source):
             self._data = {}
-            for line in text.splitlines():
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    key, _, value = line.partition("=")
-                    self._data[key.strip().lower()] = value.strip()
+            if isinstance(source, dict):
+                for key, value in source.items():
+                    self._data[key.lower()] = str(value)
+            else:
+                for line in source.splitlines():
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        key, _, value = line.partition("=")
+                        self._data[key.strip().lower()] = value.strip()
 
         def get(self, key: str):
             return self._data.get(key.lower())
 
         def expand(self, key: str):
             return self._data.get(key.lower(), "")
+
+        def __setitem__(self, key: str, value: str):
+            self._data[key.lower()] = value
+
+        def __str__(self):
+            return "\n".join(f"{k} = {v}" for k, v in self._data.items())
 
     _mock = MagicMock()
     _mock.Submit = _Submit

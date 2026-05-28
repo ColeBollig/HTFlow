@@ -21,6 +21,7 @@ import importlib
 import inspect
 import textwrap
 import traceback
+import json
 from typing import Tuple, Callable
 
 from htflow.dataflow import HTCondorDataFlow, AssumptionError
@@ -140,16 +141,30 @@ def cmd_show_files(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
         print(f"  {f}")
 
 
+def cmd_show_types(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
+    logger.debug("Displaying list of defined job types")
+
+    types = df.types
+    if len(types) > 0:
+        print("Defined Job Types:")
+        for t in types:
+            print(f"   - {t}")
+    else:
+        print("No job types defined in provided JDL files")
+
+
 CMD_EXECUTE = "execute"
 CMD_CONVERT = "convert"
 CMD_SHOW = "show"
 SUBCMD_SHOW_FILES = "files"
+SUBCMD_SHOW_TYPES = "types"
 
 CMD_TO_FUNCTION = {
     CMD_EXECUTE: cmd_execute,
     CMD_CONVERT: cmd_convert,
     CMD_SHOW: {
-        SUBCMD_SHOW_FILES: cmd_show_files
+        SUBCMD_SHOW_FILES: cmd_show_files,
+        SUBCMD_SHOW_TYPES: cmd_show_types,
     },
 }
 
@@ -194,6 +209,15 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
         required=True,
         metavar="PATH",
         help="One or more HTCondor submit files to process",
+    )
+    common_parser.add_argument(
+        "--job-shapes",
+        dest="job_shapes",
+        action="store",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to JSON file containing special job type shapes",
     )
 
     # Actions commands (i.e. execute, convert, show, etc)
@@ -247,12 +271,14 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
         "subcmd",
         choices=[
             SUBCMD_SHOW_FILES,
+            SUBCMD_SHOW_TYPES,
         ],
         metavar="view",
         help=textwrap.dedent(
             """
             View options:
                 files - Show list of root, intermediate, and leaf files in dataflow
+                types - Show list of job types defined within list of JDL files
             """
         )
     )
@@ -295,10 +321,17 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
 def main() -> None:
     args, action = parse_args()
     setup_logging(args)
-    df = HTCondorDataFlow(files=args.jdl)
 
     try:
+        df = HTCondorDataFlow(files=args.jdl)
+        if args.job_shapes:
+            with open(args.job_shapes, "r") as f:
+                df.shapes = json.load(f)
+
         action(df, args)
+    except AssumptionError as e:
+        logger.critical(f"Invalid dataflow: {e}")
+        sys.exit(EXIT_SETUP_FAILURE)
     except Exception as e:
         logger.critical("Uncaught Exception %s", traceback.format_exc())
         sys.exit(EXIT_SETUP_FAILURE)
