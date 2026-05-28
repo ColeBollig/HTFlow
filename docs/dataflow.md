@@ -88,7 +88,7 @@ dag = HTCondorDataFlow(files=["a.sub", "b.sub"]).generate()
 
 Runs `generate()` internally and writes an HTCondor DAGMan file to `filename`. Returns the `Path` of the written file.
 
-The generated file contains a `JOB` entry for every node and `PARENT … CHILD …` lines for every dependency edge.
+The generated file contains a `JOB` entry for every node followed by `PARENT … CHILD …` lines for every dependency edge. When a JDL file's parent directory differs from the current working directory, a `DIR <directory>` clause is appended to its `JOB` line so DAGMan submits the job from the correct location. Children that share an identical set of parents are collapsed onto a single `PARENT … CHILD …` line.
 
 ```python
 path = HTCondorDataFlow(files=["a.sub", "b.sub"], filename="out.dag").write()
@@ -150,10 +150,12 @@ df.write()
 # Automatically written HTCondor DAG file from Dataflow
 # Generated: ...
 JOB NODE-0 fetch.sub
-PARENT NODE-0 CHILD NODE-1
 JOB NODE-1 process.sub
-PARENT NODE-1 CHILD NODE-2
 JOB NODE-2 report.sub
+
+# Node relationships determined by dataflow:
+PARENT NODE-0 CHILD NODE-1
+PARENT NODE-1 CHILD NODE-2
 ```
 
 ---

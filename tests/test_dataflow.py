@@ -16,6 +16,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from htflow.dataflow import HTCondorDataFlow, AssumptionError, Assumption
+from htflow.utils.directory import ChangeDir
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +435,8 @@ class TestWrite:
         dag_path = tmp_path / "out.dag"
         HTCondorDataFlow(files=[a], filename=str(dag_path)).write()
         content = dag_path.read_text()
-        assert str(a) in content
+        assert a.name in content
+        assert str(a.parent) in content
 
     def test_contains_parent_child_for_connected_nodes(self, make_sub, tmp_path):
         a = make_sub("a", outputs=["x.txt"])
@@ -451,6 +453,7 @@ class TestWrite:
         HTCondorDataFlow(files=[a, b], filename=str(dag_path)).write()
         content = dag_path.read_text()
         assert "PARENT" not in content
+        assert "# Node relationships determined by dataflow:" not in content
 
     def test_write_overwrites_not_appends(self, make_sub, tmp_path):
         a = make_sub("a")
@@ -460,3 +463,101 @@ class TestWrite:
         df.write()
         content = dag_path.read_text()
         assert content.count("JOB NODE-0") == 1
+
+    def test_job_line_dir_clause_added_for_absolute_path(self, make_sub, tmp_path):
+        a = make_sub("a")
+        dag_path = tmp_path / "out.dag"
+        HTCondorDataFlow(files=[a], filename=str(dag_path)).write()
+        content = dag_path.read_text()
+        assert f"DIR {a.parent}" in content
+        assert f"JOB NODE-0 {a.name} DIR" in content
+
+    def test_job_line_no_dir_when_jdl_in_cwd(self, tmp_path):
+        sub = tmp_path / "a.sub"
+        sub.write_text("executable = example.sh\nqueue\n")
+        dag_path = tmp_path / "out.dag"
+        with ChangeDir(tmp_path):
+            HTCondorDataFlow(files=[sub], filename=str(dag_path)).write()
+        content = dag_path.read_text()
+        assert "DIR" not in content
+
+    def test_job_line_dir_preserves_relative_path(self, tmp_path):
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+        sub = subdir / "a.sub"
+        sub.write_text("executable = example.sh\nqueue\n")
+        dag_path = tmp_path / "out.dag"
+        with ChangeDir(tmp_path):
+            HTCondorDataFlow(files=[Path("subdir/a.sub")], filename=str(dag_path)).write()
+        content = dag_path.read_text()
+        assert "DIR subdir" in content
+        assert "JOB NODE-0 a.sub DIR subdir" in content
+
+    def test_shared_children_grouped_by_parent_set(self, make_sub, tmp_path):
+        p1  = make_sub("p1",  outputs=["x.txt"])
+        p2  = make_sub("p2",  outputs=["y.txt"])
+        p3  = make_sub("p3",  outputs=["z.txt"])
+        c1  = make_sub("c1",  inputs=["x.txt", "y.txt", "z.txt"])
+        c2  = make_sub("c2",  inputs=["x.txt", "y.txt", "z.txt"])
+        c10 = make_sub("c10", inputs=["x.txt"])
+        c20 = make_sub("c20", inputs=["y.txt"])
+        c30 = make_sub("c30", inputs=["z.txt"])
+        dag_path = tmp_path / "out.dag"
+        HTCondorDataFlow(
+            files=[p1, p2, p3, c1, c2, c10, c20, c30],
+            filename=str(dag_path),
+        ).write()
+        content = dag_path.read_text()
+        assert "PARENT NODE-0 NODE-1 NODE-2 CHILD NODE-3 NODE-4" in content
+        assert "PARENT NODE-0 CHILD NODE-5" in content
+        assert "PARENT NODE-1 CHILD NODE-6" in content
+        assert "PARENT NODE-2 CHILD NODE-7" in content
+        assert content.count("PARENT") == 4
+
+    def test_distinct_children_written_separately(self, make_sub, tmp_path):
+        a = make_sub("a", outputs=["x.txt"])
+        b = make_sub("b", outputs=["y.txt"])
+        c = make_sub("c", inputs=["x.txt"])
+        d = make_sub("d", inputs=["y.txt"])
+        dag_path = tmp_path / "out.dag"
+        HTCondorDataFlow(files=[a, b, c, d], filename=str(dag_path)).write()
+        content = dag_path.read_text()
+        assert content.count("PARENT") == 2
+        assert "PARENT NODE-0 CHILD NODE-2" in content
+        assert "PARENT NODE-1 CHILD NODE-3" in content
+
+    def test_diamond_compresses_to_two_lines(self, make_sub, tmp_path):
+        a = make_sub("a", outputs=["shared.txt"])
+        b = make_sub("b", inputs=["shared.txt"], outputs=["b_out.txt"])
+        c = make_sub("c", inputs=["shared.txt"], outputs=["c_out.txt"])
+        e = make_sub("e", inputs=["b_out.txt", "c_out.txt"])
+        dag_path = tmp_path / "out.dag"
+        HTCondorDataFlow(files=[a, b, c, e], filename=str(dag_path)).write()
+        content = dag_path.read_text()
+        assert content.count("PARENT") == 2
+        assert "PARENT NODE-0 CHILD NODE-1 NODE-2" in content
+        assert "PARENT NODE-1 NODE-2 CHILD NODE-3" in content
+
+    def test_parent_child_lines_appear_after_all_job_lines(self, make_sub, tmp_path):
+        a = make_sub("a", outputs=["x.txt"])
+        b = make_sub("b", inputs=["x.txt"])
+        dag_path = tmp_path / "out.dag"
+        HTCondorDataFlow(files=[a, b], filename=str(dag_path)).write()
+        content = dag_path.read_text()
+        assert content.rfind("JOB") < content.find("PARENT")
+
+    def test_no_dataflow_relations_skips_relations_section(self, make_sub, tmp_path):
+        a = make_sub("a")
+        dag_path = tmp_path / "out.dag"
+        HTCondorDataFlow(files=[a], filename=str(dag_path)).write()
+        content = dag_path.read_text()
+        assert "PARENT" not in content
+        assert "# Node relationships determined by dataflow:" not in content
+
+    def test_relations_section_comment_present_when_relations_exist(self, make_sub, tmp_path):
+        a = make_sub("a", outputs=["x.txt"])
+        b = make_sub("b", inputs=["x.txt"])
+        dag_path = tmp_path / "out.dag"
+        HTCondorDataFlow(files=[a, b], filename=str(dag_path)).write()
+        content = dag_path.read_text()
+        assert "# Node relationships determined by dataflow:" in content

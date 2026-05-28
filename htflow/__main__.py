@@ -15,10 +15,12 @@
 import sys
 import time
 import signal
+import logging
 import argparse
 import importlib
 import inspect
 import textwrap
+import traceback
 from typing import Tuple, Callable
 
 from htflow.dataflow import HTCondorDataFlow, AssumptionError
@@ -27,6 +29,24 @@ from htflow.engines.engine import Engine
 
 EXIT_SETUP_FAILURE = 125
 
+logger = logging.getLogger(__name__)
+
+
+def setup_logging(args: argparse.Namespace) -> None:
+    """Setup global logger for htflow"""
+    # Disable logging
+    if args.no_log:
+        logging.disable(logging.CRITICAL)
+        return
+
+    # Setup logger
+    level = getattr(logging, args.log_level)
+    handler = logging.FileHandler(args.log_file) if args.log_file else logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s]: %(message)s"))
+    logging.getLogger().setLevel(level)
+    logging.getLogger().addHandler(handler)
+
+
 def _load_engine(name: str) -> type:
     """Dynamically load an Engine subclass by name or fully qualified path.
 
@@ -34,6 +54,7 @@ def _load_engine(name: str) -> type:
         Imports htflow.engines.<name> and returns the first concrete Engine subclass found.
     """
     try:
+        logger.debug("Attempting to dynamically load htflow.engines.%s", name)
         module = importlib.import_module(f"htflow.engines.{name}")
         candidates = [
             cls for _, cls in inspect.getmembers(module, inspect.isclass)
@@ -41,12 +62,20 @@ def _load_engine(name: str) -> type:
         ]
         if not candidates:
             raise ImportError(f"No concrete Engine subclass found in htflow.engines.{name}")
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Dynamically loaded class candidates:")
+            for i, c in enumerate(candidates):
+                logger.debug("\t[%2d] %s", i, c.__name__)
+
         cls = candidates[0]
     except ModuleNotFoundError as e:
         raise ImportError(str(e)) from e
 
     if not (isinstance(cls, type) and issubclass(cls, Engine)):
         raise TypeError(f"'{name}' does not resolve to an Engine subclass")
+
+    logger.debug("Selected dynamically loaded class: %s", cls.__name__)
 
     return cls
 
@@ -55,7 +84,7 @@ def cmd_execute(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
     try:
         engine_cls = _load_engine(args.engine)
     except (ImportError, TypeError) as e:
-        print(f"ERROR: could not load engine '{args.engine}': {e}", file=sys.stderr)
+        logger.error("could not load engine '%s': %s", args.engine, e)
         sys.exit(EXIT_SETUP_FAILURE)
 
     dag = df.generate()
@@ -64,14 +93,13 @@ def cmd_execute(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
     def _handle_signal(signum, frame):
         nonlocal engine
         engine.Cleanup()
-        print("Interrupted — cleaned up.", file=sys.stderr)
+        logger.info("Interrupted — cleaned up.")
         sys.exit(1)
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    # TODO: Rescue/recovery
-
+    engine.Recover()
     engine.Bootstrap()
 
     while (ec := engine.Terminate()) is None:
@@ -86,11 +114,16 @@ def cmd_execute(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
 def cmd_convert(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
     if args.filename is not None:
         df.filename = args.filename
+
+    logger.debug("Converting dataflow to dag file: %s", df.filename)
+
     path = df.write()
     print(f"Dataflow written to DAG file: {path}")
 
 
 def cmd_show_files(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
+    logger.debug("Displaying data flow files")
+
     df.generate()
     roots, intermediate, leafs = df.groupings
 
@@ -126,6 +159,31 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
         prog = "htflow",
         description = "HTFlow — dataflow runner for HTCondor",
         epilog = "Developed by the Center for High Throughput Computing (CHTC) at UW-Madison",
+    )
+
+    # Logging options
+    log_group = parser.add_argument_group("logging")
+    log_output = log_group.add_mutually_exclusive_group()
+    log_output.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        metavar="LEVEL",
+        action="store",
+        type=str.upper,
+        help="Logging level (DEBUG/INFO/WARNING/ERROR/CRITICAL, default: INFO)",
+    )
+    log_output.add_argument(
+        "--no-log",
+        action="store_true",
+        default=False,
+        help="Disable all logging output",
+    )
+    log_group.add_argument(
+        "--log-file",
+        default=None,
+        metavar="PATH",
+        help="Write log output to this file instead of stdout",
     )
 
     # Command line options common to all actions
@@ -236,12 +294,13 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
 
 def main() -> None:
     args, action = parse_args()
+    setup_logging(args)
     df = HTCondorDataFlow(files=args.jdl)
 
     try:
         action(df, args)
     except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        logger.critical("Uncaught Exception %s", traceback.format_exc())
         sys.exit(EXIT_SETUP_FAILURE)
 
 

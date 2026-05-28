@@ -66,3 +66,16 @@ with ChangeDir("/tmp/a"):
     # cwd == /tmp/a
 # cwd == original
 ```
+
+### Same-directory optimization
+
+If `dest` resolves to the current working directory, `ChangeDir` skips the `os.chdir` call entirely. The block behaves identically from the caller's perspective. `cd.origin` will be `None` in this case, since no directory switch occurred and there is nothing to restore.
+
+This comparison uses `.resolve()` on both sides, so relative paths, `"."`, and symlinks pointing to the current directory are all treated as same-directory.
+
+```python
+# Assuming cwd is already /tmp/workdir
+with ChangeDir("/tmp/workdir") as cd:
+    assert cd.origin is None   # no chdir happened
+    # cwd is still /tmp/workdir
+```

@@ -224,13 +224,28 @@ class HTCondorDataFlow():
             f.write("# Automatically written HTCondor DAG file from Dataflow\n")
             f.write(f"# Generated: {ctime()}\n")
 
-            # TODO: Optimize writing multiple parents to shared children?
+            child_to_parents = {}
             for node in self._dag:
-                f.write(f"JOB {node.name} {node.internal}\n")
+                jdl = Path(node.internal)
+                declaration = f"JOB {node.name} {jdl.name}" if jdl.parent.resolve() == Path.cwd() else f"JOB {node.name} {jdl.name} DIR {jdl.parent}"
+                f.write(f"{declaration}\n")
+
+                # Group children by their parent-set; each unique parent-set gets one PARENT…CHILD line
                 if node.children is not None:
-                    relations = f"PARENT {node.name} CHILD"
-                    for idx in node.children:
-                        relations += f" {self._dag[idx].name}"
-                    f.write(f"{relations}\n")
+                    for child_id in node.children:
+                        child_to_parents.setdefault(child_id, set()).add(node.id)
+
+            # Only do secondary writing if we have parent/child relationships
+            if child_to_parents:
+                f.write("\n# Node relationships determined by dataflow:\n")
+
+                parent_set_to_children = {}
+                for child_id, parent_ids in child_to_parents.items():
+                    parent_set_to_children.setdefault(frozenset(parent_ids), []).append(child_id)
+
+                for parent_ids, child_ids in sorted(parent_set_to_children.items(), key=lambda kv: tuple(sorted(kv[0]))):
+                    parents_str  = " ".join(self._dag[i].name for i in sorted(parent_ids))
+                    children_str = " ".join(self._dag[i].name for i in sorted(child_ids))
+                    f.write(f"PARENT {parents_str} CHILD {children_str}\n")
 
         return DAG

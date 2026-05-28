@@ -109,3 +109,26 @@ def test_truediv_invalid_type_raises(tmp_path):
     cd = ChangeDir(tmp_path)
     with pytest.raises(TypeError):
         _ = cd / 99
+
+
+def test_no_chdir_when_already_in_destination():
+    original = Path.cwd()
+    with ChangeDir(original) as cd:
+        assert cd.origin is None
+        assert Path.cwd() == original
+
+
+def test_exit_noop_when_no_chdir_occurred():
+    original = Path.cwd()
+    with ChangeDir(Path.cwd()):
+        pass
+    assert Path.cwd() == original
+
+
+def test_resolved_symlink_treated_as_same_dir(tmp_path):
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path)
+    os.chdir(tmp_path)
+    with ChangeDir(link) as cd:
+        assert cd.origin is None
+    os.chdir(Path(__file__).parent)

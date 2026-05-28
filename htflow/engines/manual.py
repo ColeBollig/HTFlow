@@ -13,8 +13,10 @@
 # limitations under the License.
 
 from .engine import Engine
-from typing import Set, Optional
+from ..utils.directory import ChangeDir
 from .. import dag
+from typing import Set, Optional
+from pathlib import Path
 import enum
 import subprocess
 import shlex
@@ -42,6 +44,18 @@ class ManualNode():
         self._proc = None
         self._state = ManualNodeState.BLOCKED
         self._waiting_on = None if node.parents is None else set(node.parents)
+        self._failure_reason = None
+
+    def __repr__(self) -> str:
+        return f"{self._jdl} ({self._state.name}): '{self._failure_reason}'"
+
+    @property
+    def failure(self) -> Optional[str]:
+        return self._failure_reason
+
+    @property
+    def jdl(self) -> Path:
+        return self._jdl
 
     @property
     def process(self) -> Optional[subprocess.Popen]:
@@ -71,6 +85,8 @@ class ManualNode():
             raise RuntimeError(f"Current state {self._state.name} does not allow transitions")
         elif val not in STATE_TRANSITIONS[self._state]:
             raise RuntimeError(f"Illegal state transition from {self._state.name} to {val.name}")
+
+        logger.debug("Switching node %s state: %s -> %s", self._node.internal.jdl, self._state.name, val.name)
 
         self._state = val
 
@@ -105,6 +121,8 @@ class ManualNode():
         with open(self._jdl, "r") as f:
             desc = htcondor2.Submit(f.read())
 
+        origin = Path(self._jdl).parent.resolve()
+
         cmd = [ desc.expand("executable") ]
         args = desc.expand("arguments") or ""
 
@@ -113,11 +131,14 @@ class ManualNode():
 
         cmd += shlex.split(args)
 
-        self._proc = subprocess.Popen(
-            cmd,
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-        )
+        logger.info("Executing: %s", " ".join(cmd))
+
+        with ChangeDir(origin):
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            )
         self.state = ManualNodeState.ACTIVE
 
     def Orphaned(self, dag: dag.Dag) -> None:
@@ -135,11 +156,12 @@ class ManualNode():
         if not self.IsTerminal():
             self.state = ManualNodeState.ORPHAN
 
-    def Fail(self, dag: dag.Dag) -> None:
+    def Fail(self, dag: dag.Dag, reason: str = "Failure reason unkown") -> None:
         if self._node.children is not None:
             for i in self._node.children:
                 dag[i].internal.Orphaned(dag)
         self.state = ManualNodeState.FAILURE
+        self._failure_reason = reason
 
     def Done(self, dag: dag.Dag) -> None:
         if self._node.children is not None:
@@ -147,8 +169,7 @@ class ManualNode():
                 child = dag[i]
                 if child.internal.Notify(self._node.id):
                     if not child.internal.IsTerminal():
-                        child.internal.state = ManualNodeState.READY
-                        dag.internal += child
+                        dag.internal.prepare(child)
         self.state = ManualNodeState.SUCCESS
 
 class ManualDag():
@@ -156,16 +177,21 @@ class ManualDag():
         self._ready_nodes = set()
         self._active_nodes = set()
 
+    def __repr__(self) -> str:
+        return self.__class__.__name__
+
     @property
     def ready_nodes(self) -> Set[int]:
         return self._ready_nodes
 
-    def __iadd__(self, val: dag.Node) -> ManualDag:
-        if not isinstance(val, dag.Node):
+    def prepare(self, node: dag.Node) -> None:
+        if not isinstance(node, dag.Node):
             raise ValueError("Ready nodes can only be added to from a dag.Node")
 
-        self._ready_nodes.add(val.id)
-        return self
+        logger.info("Readying node %s for execution", node.internal.jdl)
+
+        self._ready_nodes.add(node.id)
+        node.internal.state = ManualNodeState.READY
 
     @property
     def active_nodes(self) -> Set[int]:
@@ -183,15 +209,34 @@ class ManualEngine(Engine):
         for node in self._dag:
             node.internal = ManualNode(node)
 
+        self._had_failure = False
+
+    def __exit(self) -> None:
+        if self._had_failure:
+            logger.error("####### Failed Nodes #######")
+
+            for node in self._dag:
+                if node.internal.IsFailed():
+                    logger.error("    Node %s > %s", node.internal.jdl, node.internal.failure)
+
+            logger.error("############################")
+
     def Bootstrap(self) -> None:
         """Manual dataflow bootstrap"""
         for node in self._dag.roots:
             if node.internal.IsBlocked():
-                self._dag.internal += node
-                node.internal.state = ManualNodeState.READY
+                self._dag.internal.prepare(node)
+            else:
+                logger.debug("Root node %s skipping prepare due to intitial state %s", node.internal.jdl, node.internal.state.name)
 
     def Cleanup(self) -> None:
         """Manual dataflow final cleanup"""
+        num_active = len(self._dag.internal.active_nodes)
+
+        if num_active == 0:
+            return
+
+        logger.info("Cleaning up %d active nodes", num_active)
 
         # Kill all active node processes
         for i in self._dag.internal.active_nodes:
@@ -200,13 +245,16 @@ class ManualEngine(Engine):
                 try:
                     process.kill()
                 except Exception as e:
-                    pass
+                    logging.warn("Failed to kill node %s: %s", self._dag[i].internal.jdl, e)
 
         # Wait for all processes to finish (unless we take to long and get killed)
         for i in self._dag.internal.active_nodes:
             process = self._dag[i].internal.process
             if process is not None:
+                logger.info("Awaiting node %s task termination", self._dag[i].internal.jdl)
                 process.wait()
+
+        self.__exit()
 
     def Execute(self) -> None:
         """Manual dataflow execute of nodes"""
@@ -216,18 +264,21 @@ class ManualEngine(Engine):
             attempted.append(i)
 
             node = self._dag[i]
+            logger.info("Executing node %s", node.internal.jdl)
             try:
                 node.internal.Execute()
                 self._dag.internal.active_nodes.add(node.id)
             except Exception as e:
-                node.internal.Fail(self._dag)
+                self._had_failure = True
+                node.internal.Fail(self._dag, str(e))
+                logger.error("Failed to execute node %s task: %s", node.internal.jdl, e)
 
         self._dag.internal.ready_nodes.difference_update(attempted)
 
 
     def Recover(self) -> None:
         """Manual dataflow recovery"""
-        pass
+        logger.debug("Recovery mode not implemented yet")
 
     def Terminate(self) -> Optional[int]:
         """Manual dataflow termination check"""
@@ -243,6 +294,10 @@ class ManualEngine(Engine):
             elif not node.internal.IsSuccess():
                 success = False
 
+        self.__exit()
+
+        logger.info("Dataflow execution finished: %s", "Success" if success else "Failed")
+
         return self.EXIT_SUCCESS if success else self.EXIT_FAILURE
 
     def Update(self) -> None:
@@ -253,12 +308,16 @@ class ManualEngine(Engine):
             node = self._dag[i]
             if node.internal.process.poll() is not None:
                 # NOTE: Current code will cause deadlock if subprocess.Popen is changed to use PIPEs
+                exit_code = node.internal.process.returncode
+                logger.info("Node %s exited with code %d", node.internal.jdl, exit_code)
+
                 exited.append(node.id)
 
-                if node.internal.process.returncode == 0:
+                if exit_code == 0:
                     node.internal.Done(self._dag)
                 else:
-                    node.internal.Fail(self._dag)
+                    self._had_failure = True
+                    node.internal.Fail(self._dag, f"Exited with code {exit_code}")
 
         self._dag.internal.active_nodes.difference_update(exited)
 

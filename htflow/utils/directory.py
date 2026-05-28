@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import os
 import pathlib
+import logging
 from typing import Union
 
+logger = logging.getLogger(__name__)
 
 class ChangeDir:
     """Context manager that temporarily changes the working directory.
@@ -40,8 +42,10 @@ class ChangeDir:
 
     def __enter__(self) -> ChangeDir:
         """Temporarily switch to destination directory"""
-        self.origin = pathlib.Path.cwd()
-        os.chdir(self.destination)
+        if self.destination.resolve() != pathlib.Path.cwd().resolve():
+            logger.debug("[ENTER] Switching directory to %s", self.destination)
+            self.origin = pathlib.Path.cwd()
+            os.chdir(self.destination)
         return self
 
     def __truediv__(self, other: Union[pathlib.Path, str]) -> pathlib.Path:
@@ -50,6 +54,8 @@ class ChangeDir:
         return self.destination / other
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Swtich back to original directory"""
-        os.chdir(self.origin)
-        self.origin = None
+        """Switch back to original directory"""
+        if self.origin is not None:
+            logger.debug("[EXIT]  Switching directory to %s", self.origin)
+            os.chdir(self.origin)
+            self.origin = None
