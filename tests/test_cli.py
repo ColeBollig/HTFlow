@@ -14,6 +14,7 @@
 
 import sys
 import json
+import fcntl
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -125,6 +126,38 @@ class TestShowFiles:
         run_cli("show", "files", "--jdl", str(a), str(b))
         assert "mid.txt" in capsys.readouterr().out
 
+    def test_shows_protocol_header(self, make_sub, capsys):
+        a = make_sub("a", outputs=["x.txt"])
+        run_cli("show", "files", "--jdl", str(a))
+        assert "CEDAR files in dataflow" in capsys.readouterr().out
+
+    def test_shows_table_header(self, make_sub, capsys):
+        a = make_sub("a", outputs=["x.txt"])
+        run_cli("show", "files", "--jdl", str(a))
+        out = capsys.readouterr().out
+        assert "Gen" in out
+        assert "Consumers" in out
+
+    def test_gen_dash_for_external_input(self, make_sub, capsys):
+        a = make_sub("a", inputs=["ext.txt"])
+        run_cli("show", "files", "--jdl", str(a))
+        line = next(l for l in capsys.readouterr().out.splitlines() if "ext.txt" in l)
+        assert "  -  " in line
+
+    def test_gen_T_for_produced_file(self, make_sub, capsys):
+        a = make_sub("a", outputs=["out.txt"])
+        run_cli("show", "files", "--jdl", str(a))
+        line = next(l for l in capsys.readouterr().out.splitlines() if "out.txt" in l)
+        assert "  T  " in line
+
+    def test_consumer_count(self, make_sub, capsys):
+        a = make_sub("a", outputs=["x.txt"])
+        b = make_sub("b", inputs=["x.txt"])
+        c = make_sub("c", inputs=["x.txt"])
+        run_cli("show", "files", "--jdl", str(a), str(b), str(c))
+        line = next(l for l in capsys.readouterr().out.splitlines() if "x.txt" in l)
+        assert "2" in line
+
 
 # ---------------------------------------------------------------------------
 # show types
@@ -178,3 +211,46 @@ class TestErrorHandling:
         dag = tmp_path / "out.dag"
         code = run_cli("convert", str(dag), "--jdl", str(a), "--job-shapes", str(bad_json))
         assert code == 125
+
+
+# ---------------------------------------------------------------------------
+# cleanup
+# ---------------------------------------------------------------------------
+
+class TestCleanup:
+    def test_no_directory_exits_success(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert run_cli("cleanup") == 0
+
+    def test_no_directory_prints_message(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        run_cli("cleanup")
+        assert "Nothing to clean up" in capsys.readouterr().out
+
+    def test_removes_directory(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "flowman").mkdir()
+        run_cli("cleanup")
+        assert not (tmp_path / "flowman").exists()
+
+    def test_removes_state_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        flowman = tmp_path / "flowman"
+        flowman.mkdir()
+        (flowman / "manual.state").write_text("*** FINISHED 1234.0 a.sub\n")
+        run_cli("cleanup")
+        assert not flowman.exists()
+
+    def test_locked_exits_engine_active(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        flowman = tmp_path / "flowman"
+        flowman.mkdir()
+        lock_file = flowman / "flowman.lock"
+        lock_file.touch()
+        fp = open(lock_file, "w")
+        fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            assert run_cli("cleanup") == 75
+        finally:
+            fcntl.flock(fp, fcntl.LOCK_UN)
+            fp.close()

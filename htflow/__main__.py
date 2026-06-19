@@ -22,13 +22,17 @@ import inspect
 import textwrap
 import traceback
 import json
+import shutil
+import fcntl
+from pathlib import Path
 from typing import Tuple, Callable
 
 from htflow.dataflow import HTCondorDataFlow, AssumptionError
 from htflow.dag import Dag
-from htflow.engines.engine import Engine
+from htflow.engines.engine import Engine, EngineExecutionError
 
 EXIT_SETUP_FAILURE = 125
+EXIT_ENGINE_ACTIVE = 75
 
 logger = logging.getLogger(__name__)
 
@@ -89,16 +93,23 @@ def cmd_execute(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
         sys.exit(EXIT_SETUP_FAILURE)
 
     dag = df.generate()
-    engine = engine_cls(dag)
+    engine = None
 
     def _handle_signal(signum, frame):
         nonlocal engine
-        engine.Cleanup()
+        if engine is not None:
+            engine.Cleanup()
         logger.info("Interrupted — cleaned up.")
         sys.exit(1)
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
+
+    try:
+        engine = engine_cls(dag)
+    except EngineExecutionError as e:
+        logger.error("Engine startup failed: %s", e)
+        sys.exit(EXIT_ENGINE_ACTIVE)
 
     engine.Recover()
     engine.Bootstrap()
@@ -112,6 +123,29 @@ def cmd_execute(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
     sys.exit(ec)
 
 
+def cmd_cleanup(args: argparse.Namespace) -> None:
+    workdir = Engine.work_dir()
+    if not workdir.exists():
+        print("Nothing to clean up (no flowman/ directory found).")
+        return
+
+    lock_fp = None
+    if Engine.lock_file().exists():
+        try:
+            lock_fp = open(Engine.lock_file(), "w")
+            fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            if lock_fp:
+                lock_fp.close()
+            logger.error("Cannot clean up: an engine is currently running.")
+            sys.exit(EXIT_ENGINE_ACTIVE)
+
+    shutil.rmtree(workdir)
+    if lock_fp:
+        lock_fp.close()
+    print("Cleaned up flowman/ directory.")
+
+
 def cmd_convert(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
     if args.filename is not None:
         df.filename = args.filename
@@ -123,6 +157,40 @@ def cmd_convert(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
 
 
 def cmd_show_files(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
+    logger.debug("Displaying data flow files")
+
+    df.generate()
+
+    file_groups = dict()
+    for f in df.mapping.keys():
+        protocol = "cedar"
+        f_str = str(f)
+
+        if "://" in f_str:
+            protocol = f_str[:f_str.find("://")].lower()
+
+        if protocol in file_groups:
+            file_groups[protocol].append(f)
+        else:
+            file_groups[protocol] = [ f ]
+
+    first = True
+    for protocol, files in file_groups.items():
+        if not first:
+            print("")
+
+        print(f"{protocol.upper()} files in dataflow")
+        print(" Gen | Consumers | File")
+        print("-----+-----------+----->")
+        for f in files:
+            src, dependencies = df.mapping[f]
+            gen = "-" if src is None else "T"
+            consumers = len(dependencies)
+            print(f"  {gen}  | {consumers:>9} | {f}")
+
+        first = False
+
+def _cmd_show_files(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
     logger.debug("Displaying data flow files")
 
     df.generate()
@@ -155,6 +223,7 @@ def cmd_show_types(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
 
 CMD_EXECUTE = "execute"
 CMD_CONVERT = "convert"
+CMD_CLEANUP = "cleanup"
 CMD_SHOW = "show"
 SUBCMD_SHOW_FILES = "files"
 SUBCMD_SHOW_TYPES = "types"
@@ -162,6 +231,7 @@ SUBCMD_SHOW_TYPES = "types"
 CMD_TO_FUNCTION = {
     CMD_EXECUTE: cmd_execute,
     CMD_CONVERT: cmd_convert,
+    CMD_CLEANUP: cmd_cleanup,
     CMD_SHOW: {
         SUBCMD_SHOW_FILES: cmd_show_files,
         SUBCMD_SHOW_TYPES: cmd_show_types,
@@ -265,6 +335,13 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
         help="Output DAG filename (default: dataflow.dag)"
     )
 
+    # Cleanup: Command to remove the engine working directory
+    subparsers.add_parser(
+        CMD_CLEANUP,
+        formatter_class=argparse.RawTextHelpFormatter,
+        help="Remove the engine working directory (flowman/)",
+    )
+
     # Show: Command to do introspection of various aspects of the dataflow
     show_p = _add_sub_parser(CMD_SHOW, "Inspect aspects about dataflow")
     show_p.add_argument(
@@ -323,6 +400,10 @@ def main() -> None:
     setup_logging(args)
 
     try:
+        if action is cmd_cleanup:
+            action(args)
+            return
+
         df = HTCondorDataFlow(files=args.jdl)
         if args.job_shapes:
             with open(args.job_shapes, "r") as f:

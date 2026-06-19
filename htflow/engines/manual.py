@@ -17,6 +17,7 @@ from ..utils.directory import ChangeDir
 from .. import dag
 from typing import Set, Optional
 from pathlib import Path
+from time import time as now
 import enum
 import subprocess
 import shlex
@@ -71,8 +72,8 @@ class ManualNode():
             raise ValueError(f"Invalid manual node state type provided ({type(val)})")
 
         STATE_TRANSITIONS = {
-            ManualNodeState.BLOCKED: [ ManualNodeState.READY, ManualNodeState.ORPHAN ],
-            ManualNodeState.READY:   [ ManualNodeState.ACTIVE, ManualNodeState.FAILURE, ManualNodeState.ORPHAN ],
+            ManualNodeState.BLOCKED: [ ManualNodeState.READY, ManualNodeState.SUCCESS, ManualNodeState.ORPHAN ],
+            ManualNodeState.READY:   [ ManualNodeState.ACTIVE, ManualNodeState.SUCCESS, ManualNodeState.FAILURE, ManualNodeState.ORPHAN ],
             ManualNodeState.ACTIVE:  [ ManualNodeState.SUCCESS, ManualNodeState.FAILURE, ManualNodeState.ORPHAN ],
             ManualNodeState.SUCCESS: None,
             ManualNodeState.FAILURE: None,
@@ -204,12 +205,22 @@ class ManualEngine(Engine):
     EXIT_FAILURE = 1
 
     def __init__(self, dag: dag.Dag) -> None:
-        self._dag = dag
-        self._dag.internal = ManualDag()
-        for node in self._dag:
-            node.internal = ManualNode(node)
+        super().__init__()
 
-        self._had_failure = False
+        self.AcquireLock()
+
+        try:
+            self._dag = dag
+            self._dag.internal = ManualDag()
+            for node in self._dag:
+                node.internal = ManualNode(node)
+
+            self._had_failure = False
+
+            self._state_file = self.workdir / "manual.state"
+        except:
+            self.ReleaseLock()
+            raise
 
     def __exit(self) -> None:
         if self._had_failure:
@@ -220,6 +231,8 @@ class ManualEngine(Engine):
                     logger.error("    Node %s > %s", node.internal.jdl, node.internal.failure)
 
             logger.error("############################")
+
+        self.ReleaseLock()
 
     def Bootstrap(self) -> None:
         """Manual dataflow bootstrap"""
@@ -278,7 +291,24 @@ class ManualEngine(Engine):
 
     def Recover(self) -> None:
         """Manual dataflow recovery"""
-        logger.debug("Recovery mode not implemented yet")
+        if self._state_file.exists():
+            logger.info("### Recovering state from %s", self._state_file)
+            with open(self._state_file, "r") as f:
+                for line in f:
+                    _, _, _, jdl = line.strip().split(maxsplit=3)
+                    located = False
+                    for node in self._dag:
+                        if node.internal.jdl == Path(jdl):
+                            if node.internal.IsReady():
+                                self._dag.internal.ready_nodes.remove(node.id)
+                            node.internal.Done(self._dag)
+                            located = True
+                            break
+
+                    if not located:
+                        raise RuntimeError(f"State recovery failed to find node with {jdl}")
+
+            logger.info("### Recovery finished")
 
     def Terminate(self) -> Optional[int]:
         """Manual dataflow termination check"""
@@ -315,6 +345,8 @@ class ManualEngine(Engine):
 
                 if exit_code == 0:
                     node.internal.Done(self._dag)
+                    with open(self._state_file, "a") as f:
+                        f.write(f"*** FINISHED {now()} {node.internal.jdl}\n")
                 else:
                     self._had_failure = True
                     node.internal.Fail(self._dag, f"Exited with code {exit_code}")

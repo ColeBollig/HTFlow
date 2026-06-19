@@ -31,6 +31,11 @@ from pathlib import Path
 from time import ctime
 from typing import List, Dict, Tuple, Set, Union, Optional, Final
 
+ALLOWED_PROTOCOLS = [
+    "osdf",
+    "pelican",
+]
+
 class Assumption(enum.Enum):
     """Enumeration of enforcable assumptions"""
     SINGLE_FILE_SRC = 1
@@ -162,7 +167,7 @@ class HTCondorDataFlow():
         return types
 
     @property
-    def mapping(self) -> Dict[Path, Tuple[Optional[int], Optional[List[int]]]]:
+    def mapping(self) -> Dict[Union[Path, str], Tuple[Optional[int], Optional[List[int]]]]:
         """Get general mapping of output file to node information"""
         return self._f2n_table
 
@@ -215,12 +220,18 @@ class HTCondorDataFlow():
             if not errkey:
                 errkey = key
 
-            if "://" in value:
-                raise AssumptionError(f"{errkey} contains URLs", Assumption.NO_URL, jdl)
-            elif "$(" in value:
-                raise AssumptionError(f"{errkey} contains macro substitutions", Assumption.NO_MACROS, jdl)
+            entries = [v.strip() for v in value.split(",") if len(v.strip()) > 0]
+            for entry in entries:
+                if "://" in entry:
+                    protocol = entry[:entry.find("://")].lower()
+                    if protocol not in ALLOWED_PROTOCOLS:
+                        raise AssumptionError(f"{errkey} contains URLs: {entry}", Assumption.NO_URL, jdl)
+                elif "$(" in entry:
+                    raise AssumptionError(f"{errkey} contains macro substitutions: {entry}", Assumption.NO_MACROS, jdl)
+            return entries
 
-            return [v.strip() for v in value.split(",") if len(v.strip()) > 0]
+        def _file_key(f: str) -> Union[Path, str]:
+            return f if "://" in f else Path(f)
 
         # Process all JDL files and associated with a node
         for node in self._dag:
@@ -267,7 +278,7 @@ class HTCondorDataFlow():
 
             # Process output file list
             for f in outfiles:
-                outfile = Path(f)
+                outfile = _file_key(f)
 
                 # Ensure only one JDL file produces this output file
                 if outfile in outfile_node:
@@ -280,7 +291,7 @@ class HTCondorDataFlow():
 
             # Process input file list
             for f in infiles:
-                infile = Path(f)
+                infile = _file_key(f)
                 if infile in self._f2n_table:
                     self._f2n_table[infile][1].append(node.id)
                 else:

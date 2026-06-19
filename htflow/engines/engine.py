@@ -14,8 +14,56 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional
+from pathlib import Path
+
+import fcntl
+
+
+class EngineExecutionError(Exception):
+    pass
+
 
 class Engine(ABC):
+    @classmethod
+    def work_dir(cls) -> Path:
+        return Path("flowman")
+
+    @classmethod
+    def lock_file(cls) -> Path:
+        return cls.work_dir() / "flowman.lock"
+
+    def __init__(self) -> None:
+        """High level common engine initialization"""
+        self._work_dir = self.work_dir()
+        self._work_dir.mkdir(exist_ok=True)
+        self._lock_fp = None
+
+    @property
+    def lock(self) -> Path:
+        return self.lock_file()
+
+    @property
+    def workdir(self) -> Path:
+        return self._work_dir
+
+    def AcquireLock(self) -> None:
+        """Acquire execution file lock to lay claim to this directory"""
+        if self._lock_fp is None:
+            self._lock_fp = open(self.lock, "w")
+            try:
+                fcntl.flock(self._lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self._lock_fp.close()
+                self._lock_fp = None
+                raise EngineExecutionError("Another engine is already running (could not acquire lock).")
+
+    def ReleaseLock(self) -> None:
+        """Release execution file lock for another to execute"""
+        if self._lock_fp:
+            fcntl.flock(self._lock_fp, fcntl.LOCK_UN)
+            self._lock_fp.close()
+            self._lock_fp = None
+
     @abstractmethod
     def Bootstrap(self) -> None:
         """Engine specific intialization for execution"""

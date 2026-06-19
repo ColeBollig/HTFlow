@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import sys
+import fcntl
 import logging
 import pytest
 from pathlib import Path
@@ -95,6 +96,17 @@ def htflow_log(tmp_path):
 @pytest.fixture
 def exec_log(tmp_path):
     return tmp_path / "exec.log"
+
+
+@pytest.fixture(autouse=True)
+def isolated_workdir(tmp_path, monkeypatch):
+    """Each test runs from its own tmp_path so flowman/ is isolated per-test.
+
+    Without this, all tests share ./flowman/manual.state in the project root and
+    Recover() would try to match prior-test JDL paths against the current DAG,
+    raising RuntimeError on every test after the first.
+    """
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -242,3 +254,68 @@ class TestExecuteFanOut:
         # leaves were orphaned and never ran
         order = exec_order(exec_log)
         assert order == [1]
+
+
+# ---------------------------------------------------------------------------
+# Recovery: resume from a prior-run state file
+# ---------------------------------------------------------------------------
+
+class TestRecover:
+    def _write_state(self, tmp_path, *jdl_paths):
+        """Pre-populate flowman/manual.state as if the given JDLs already completed."""
+        flowman = tmp_path / "flowman"
+        flowman.mkdir(exist_ok=True)
+        lines = "".join(
+            f"*** FINISHED {1_000_000 + i}.0 {jdl}\n"
+            for i, jdl in enumerate(jdl_paths)
+        )
+        (flowman / "manual.state").write_text(lines)
+
+    def test_skips_completed_root(self, make_jdl, htflow_log, exec_log, tmp_path):
+        """Root already in state file: only the downstream node executes."""
+        a = make_jdl("a", task_id=1, outputs=["a.dne"])
+        b = make_jdl("b", task_id=2, inputs=["a.dne"])
+        self._write_state(tmp_path, a)
+
+        assert run_execute("--jdl", str(a), str(b), log_file=htflow_log) == 0
+        assert exec_order(exec_log) == [2]
+
+    def test_skips_chain_prefix(self, make_jdl, htflow_log, exec_log, tmp_path):
+        """First two nodes in state file: only the last node executes."""
+        a = make_jdl("a", task_id=1, outputs=["a.dne"])
+        b = make_jdl("b", task_id=2, inputs=["a.dne"], outputs=["b.dne"])
+        c = make_jdl("c", task_id=3, inputs=["b.dne"])
+        self._write_state(tmp_path, a, b)
+
+        assert run_execute("--jdl", str(a), str(b), str(c), log_file=htflow_log) == 0
+        assert exec_order(exec_log) == [3]
+
+    def test_all_complete_exits_success(self, make_jdl, htflow_log, exec_log, tmp_path):
+        """All nodes in state file: nothing executes and the run exits 0."""
+        a = make_jdl("a", task_id=1, outputs=["a.dne"])
+        b = make_jdl("b", task_id=2, inputs=["a.dne"])
+        self._write_state(tmp_path, a, b)
+
+        assert run_execute("--jdl", str(a), str(b), log_file=htflow_log) == 0
+        assert exec_order(exec_log) == []
+
+
+# ---------------------------------------------------------------------------
+# Lock contention: another engine holds the lock
+# ---------------------------------------------------------------------------
+
+class TestExecuteLocked:
+    def test_locked_exits_engine_active(self, make_jdl, htflow_log, tmp_path):
+        """execute exits 75 when another engine already holds the flowman lock."""
+        a = make_jdl("a", task_id=1)
+        flowman = tmp_path / "flowman"
+        flowman.mkdir()
+        lock_file = flowman / "flowman.lock"
+        lock_file.touch()
+        fp = open(lock_file, "w")
+        fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            assert run_execute("--jdl", str(a), log_file=htflow_log) == 75
+        finally:
+            fcntl.flock(fp, fcntl.LOCK_UN)
+            fp.close()

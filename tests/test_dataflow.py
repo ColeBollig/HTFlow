@@ -348,6 +348,37 @@ class TestAssumptions:
         with pytest.raises(Exception):
             HTCondorDataFlow(files=[a, b]).generate()
 
+    def test_osdf_url_in_input_files_allowed(self, tmp_path):
+        f = tmp_path / "osdf_ok.sub"
+        f.write_text("executable = x\ntransfer_input_files = osdf://host/file.txt\nqueue\n")
+        HTCondorDataFlow(files=[f]).generate()
+
+    def test_pelican_url_in_input_files_allowed(self, tmp_path):
+        f = tmp_path / "pelican_ok.sub"
+        f.write_text("executable = x\ntransfer_input_files = pelican://host/file.txt\nqueue\n")
+        HTCondorDataFlow(files=[f]).generate()
+
+    def test_osdf_triple_slash_url_preserved(self, tmp_path):
+        """osdf:///path (triple-slash) must not be normalized to osdf:/path by Path()."""
+        url = "osdf:///my-federation/some-file.txt"
+        f = tmp_path / "osdf_triple.sub"
+        f.write_text(f"executable = x\ntransfer_input_files = {url}\nqueue\n")
+        df = HTCondorDataFlow(files=[f])
+        df.generate()
+        assert url in df.mapping, f"URL key was normalized — got {list(df.mapping.keys())}"
+
+    def test_disallowed_url_after_allowed_in_list_raises(self, tmp_path):
+        """A disallowed URL later in the comma-separated list must still be caught."""
+        f = tmp_path / "mixed.sub"
+        f.write_text(
+            "executable = x\n"
+            "transfer_input_files = osdf://good.txt, http://evil.txt\n"
+            "queue\n"
+        )
+        with pytest.raises(AssumptionError) as exc:
+            HTCondorDataFlow(files=[f]).generate()
+        assert exc.value.assumption == Assumption.NO_URL
+
 
 # ---------------------------------------------------------------------------
 # Cycle detection
