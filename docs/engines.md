@@ -4,31 +4,62 @@ Engines drive the execution of a dataflow DAG produced by `HTCondorDataFlow`. Ea
 
 ---
 
+## `EngineExecutionError`
+
+Raised for known, user-actionable engine failures — specifically when the engine cannot acquire the working-directory lock because another instance is already running. This is distinct from unexpected exceptions, which propagate as-is for debugging.
+
+```python
+from htflow.engines.engine import EngineExecutionError
+```
+
+The CLI exits with code **75** when this error is raised during engine startup.
+
+---
+
 ## `Engine` (Abstract Base Class)
 
 `htflow.engines.engine.Engine` defines the interface that all engines must implement.
 
+### Class Methods
+
+| Method        | Returns  | Description                                                        |
+|---------------|----------|--------------------------------------------------------------------|
+| `work_dir()`  | `Path`   | Returns the engine working directory path (`flowman/` by default) |
+| `lock_file()` | `Path`   | Returns the lock file path (`work_dir() / "flowman.lock"`)        |
+
+These are class methods so tooling (such as `htflow cleanup`) can locate engine paths without instantiating an engine.
+
+### Locking
+
+`Engine.__init__()` creates the working directory and calls `AcquireLock()` before any subclass initialisation runs.
+
+`AcquireLock()` uses a **non-blocking** exclusive file lock (`LOCK_EX | LOCK_NB`). If the lock is already held by another process, it raises `EngineExecutionError` immediately rather than blocking. This means attempting to run two engines against the same working directory is an immediate, clean failure rather than a silent wait.
+
+`ReleaseLock()` is called automatically when execution completes normally (inside `Terminate()`) or when `Cleanup()` is invoked from a signal handler.
+
 ### Lifecycle Methods
 
-An engine's run loop is expected to call these methods in order:
+An engine's run loop calls these methods in order:
 
 | Method        | Description                                                               |
 |---------------|---------------------------------------------------------------------------|
-| `Bootstrap()` | One-time initialisation before execution starts                           |
+| `Recover()`   | Restore state from a previous interrupted run before execution begins     |
+| `Bootstrap()` | One-time initialisation — enqueue the first batch of ready nodes          |
 | `Execute()`   | Launch the next batch of ready nodes                                      |
 | `Update()`    | Poll running nodes and transition their state based on exit status        |
 | `Terminate()` | Check whether execution is complete; returns an exit code or `None`      |
-| `Recover()`   | Restore state after an unexpected interruption                            |
-| `Cleanup()`   | Final teardown — kill remaining processes, release resources              |
+| `Cleanup()`   | Emergency teardown — kill remaining processes, release resources          |
 
-A minimal run loop looks like:
+A minimal run loop:
 
 ```python
+engine.Recover()
 engine.Bootstrap()
 while (code := engine.Terminate()) is None:
     engine.Execute()
     engine.Update()
-engine.Cleanup()
+# Terminate() handles lock release on normal exit
+# Cleanup() is called only from signal handlers on interruption
 ```
 
 ---
@@ -43,13 +74,34 @@ engine.Cleanup()
 ManualEngine(dag: dag.Dag)
 ```
 
-The `dag` argument must be a `Dag` produced by `HTCondorDataFlow.generate()`, with each node's `internal` field set to the path of its JDL file. The constructor wraps every node in a `ManualNode` and attaches a `ManualDag` tracker to `dag.internal`.
+The `dag` argument must be a `Dag` produced by `HTCondorDataFlow.generate()`, with each node's `internal` field set to the path of its JDL file. The constructor acquires the working-directory lock, then wraps every node in a `ManualNode` and attaches a `ManualDag` tracker to `dag.internal`. If any post-lock initialisation raises, the lock is released before the exception propagates.
+
+**Raises** `EngineExecutionError` if the lock cannot be acquired (another engine is running).
+
+### Exit Codes
+
+| Constant        | Value | Meaning                              |
+|-----------------|-------|--------------------------------------|
+| `EXIT_SUCCESS`  | `0`   | All nodes completed successfully     |
+| `EXIT_FAILURE`  | `1`   | At least one node failed or was orphaned |
 
 ### Method Details
 
+#### `Recover()`
+
+Reads `flowman/manual.state` (if it exists) and marks any previously completed nodes as `SUCCESS` before `Bootstrap()` runs. This allows a workflow interrupted mid-run to resume from where it left off rather than re-executing completed nodes.
+
+The state file contains one line per completed node in the format:
+
+```
+*** FINISHED <timestamp> <jdl_path>
+```
+
+Paths that contain spaces are handled correctly. If a line references a JDL path not found in the current DAG, `Recover()` raises `RuntimeError`.
+
 #### `Bootstrap()`
 
-Transitions all root nodes (nodes with no parents) from `BLOCKED` to `READY` and enqueues them for execution.
+Transitions all root nodes (nodes with no parents, and not already marked `SUCCESS` by `Recover()`) from `BLOCKED` to `READY` and enqueues them for execution.
 
 #### `Execute()`
 
@@ -58,22 +110,18 @@ Launches a subprocess for every node currently in the `READY` state. If a node's
 #### `Update()`
 
 Polls all `ACTIVE` nodes. For each process that has exited:
-- Exit code `0` → `Done()`: node transitions to `SUCCESS`, children that are now unblocked move to `READY`
+- Exit code `0` → `Done()`: node transitions to `SUCCESS`, its completion is appended to `flowman/manual.state`, and children that are now unblocked move to `READY`
 - Any other exit code → `Fail()`: node transitions to `FAILURE`, children are `ORPHAN`ed
 
 #### `Terminate() → Optional[int]`
 
-Returns `None` while any nodes are still `READY` or `ACTIVE`. Once all nodes have reached a terminal state, returns:
+Returns `None` while any nodes are still `READY` or `ACTIVE`. Once all nodes have reached a terminal state, releases the lock and returns:
 - `0` (`EXIT_SUCCESS`) — every node succeeded
 - `1` (`EXIT_FAILURE`) — at least one node failed or was orphaned
 
-#### `Recover()`
-
-Not yet implemented (no-op).
-
 #### `Cleanup()`
 
-Kills and waits on any still-running subprocesses.
+Kills and waits on any still-running subprocesses, then releases the lock. Called only from signal handlers (`SIGINT`/`SIGTERM`) on interruption — not during normal termination.
 
 ### Usage
 
@@ -84,11 +132,11 @@ from htflow.engines.manual import ManualEngine
 dag = HTCondorDataFlow(files=["a.sub", "b.sub", "c.sub"]).generate()
 engine = ManualEngine(dag)
 
+engine.Recover()
 engine.Bootstrap()
 while (code := engine.Terminate()) is None:
     engine.Execute()
     engine.Update()
-engine.Cleanup()
 
 exit(code)
 ```
@@ -108,6 +156,8 @@ BLOCKED ──► READY ──► ACTIVE ──► SUCCESS
                                ORPHAN
 ```
 
+`Recover()` can also transition `BLOCKED` or `READY` nodes directly to `SUCCESS` when restoring a prior run's state.
+
 | State     | Description                                                           |
 |-----------|-----------------------------------------------------------------------|
 | `BLOCKED` | Waiting for one or more parent nodes to complete                      |
@@ -121,16 +171,16 @@ State transitions are validated — setting an illegal transition raises `Runtim
 
 ### Key Methods
 
-| Method                       | Description                                                                                  |
-|------------------------------|----------------------------------------------------------------------------------------------|
-| `IsBlocked/Ready/Active()`   | State predicates                                                                             |
-| `IsFailed/IsSuccess/IsOrphan()` | Terminal state predicates                                                                 |
-| `IsTerminal()`               | `True` when in `SUCCESS`, `FAILURE`, or `ORPHAN`                                            |
-| `Notify(parent_id)` → `bool` | Called when a parent succeeds; returns `True` when all parents have reported in             |
-| `Execute()`                  | Reads the JDL file, builds the command, and spawns the subprocess                           |
-| `Done(dag)`                  | Transitions to `SUCCESS` and notifies children                                              |
-| `Fail(dag)`                  | Transitions to `FAILURE` and orphans all children                                           |
-| `Orphaned(dag)`              | Recursively marks this node and all descendants as `ORPHAN`                                 |
+| Method                          | Description                                                                              |
+|---------------------------------|------------------------------------------------------------------------------------------|
+| `IsBlocked/Ready/Active()`      | State predicates                                                                         |
+| `IsFailed/IsSuccess/IsOrphan()` | Terminal state predicates                                                                |
+| `IsTerminal()`                  | `True` when in `SUCCESS`, `FAILURE`, or `ORPHAN`                                        |
+| `Notify(parent_id)` → `bool`   | Called when a parent succeeds; returns `True` when all parents have reported in          |
+| `Execute()`                     | Reads the JDL file, builds the command, and spawns the subprocess                       |
+| `Done(dag)`                     | Transitions to `SUCCESS`, writes to state file, and notifies children                   |
+| `Fail(dag)`                     | Transitions to `FAILURE` and orphans all children                                       |
+| `Orphaned(dag)`                 | Recursively marks this node and all descendants as `ORPHAN`                             |
 
 ---
 
@@ -142,8 +192,6 @@ Internal bookkeeping structure attached to `dag.internal` by `ManualEngine`. Tra
 |----------------|-------------|------------------------------------|
 | `ready_nodes`  | `Set[int]`  | Node IDs queued for execution      |
 | `active_nodes` | `Set[int]`  | Node IDs with a running subprocess |
-
-`ManualDag += node` enqueues a `dag.Node` into `ready_nodes`.
 
 ---
 

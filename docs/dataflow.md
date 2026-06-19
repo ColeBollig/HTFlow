@@ -16,8 +16,10 @@ The dataflow analysis enforces six assumptions about the submit files it process
 | 2 | `COMPLETE_LIST`      | When a job declares a `JobType`, a matching entry must exist in the `job_shapes` mapping          |
 | 3 | `NO_MACROS`          | No unresolved `$(...)` macro substitutions in file transfer lists                                 |
 | 4 | `NO_DIRECTORIES`     | `output_directory` is not set                                                                     |
-| 5 | `NO_URL`             | No `://` URLs in file lists; `output_destination` is not set                                      |
+| 5 | `NO_URL`             | Only `osdf://` and `pelican://` URL-scheme files are permitted; all other protocols and `output_destination` are rejected |
 | 6 | `NO_REMAPS`          | `transfer_output_remaps` is not set                                                               |
+
+> **Allowed protocols:** `osdf` and `pelican` URL-scheme files pass assumption 5 and are tracked in the dataflow mapping like any other file. Their keys in `mapping` are stored as plain strings (not `Path` objects) so that the original URL — including any triple-slash prefix such as `osdf:///federation/file.txt` — is preserved exactly as written in the submit file.
 
 ---
 
@@ -66,7 +68,7 @@ HTCondorDataFlow(
 | `shapes`     | `Dict[str, Dict[str, str]]`                                      | Job type shape definitions (also settable)                     |
 | `types`      | `Set[str]`                                                       | Set of distinct `JobType` values found across all JDL files    |
 | `dag`        | `Optional[dag.Dag]`                                              | The internal DAG, populated after calling `generate()`         |
-| `mapping`    | `Dict[Path, Tuple[Optional[int], Optional[List[int]]]]`         | Maps each file to `(source_node_id, [dependent_node_ids])`     |
+| `mapping`    | `Dict[Union[Path, str], Tuple[Optional[int], Optional[List[int]]]]` | Maps each file to `(source_node_id, [dependent_node_ids])`. Local files are keyed by `Path`; URL-scheme files (`osdf://`, `pelican://`) are keyed by their original string. |
 | `groupings`  | `Tuple[List[Path], List[Path], List[Path]]`                      | Files grouped as `(roots, intermediate, leafs)` — see below    |
 
 #### File groupings
