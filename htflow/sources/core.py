@@ -10,14 +10,17 @@ from . import from_jdl, from_dir
 
 logger = logging.getLogger(__name__)
 
-CLI_RESOLVERS = [from_jdl, from_dir]
+CLI_RESOLVERS = [
+    from_jdl,
+    from_dir,
+]
 
 
 def collect_jdl_files(args: argparse.Namespace) -> List[Path]:
     active_resolvers = [r for r in CLI_RESOLVERS if r.active(args)]
 
     if not active_resolvers:
-        raise InputError("at least one input source must be specified (--jdl, --dir)")
+        raise InputError("at least one input source must be specified")
 
     seen: set = set()
     files: List[Path] = []
