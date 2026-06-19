@@ -185,6 +185,42 @@ class TestShowTypes:
 # Error handling
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# --dir input source
+# ---------------------------------------------------------------------------
+
+class TestDirInput:
+    def test_dir_flag_success(self, make_sub, tmp_path):
+        make_sub("a", outputs=["x.txt"])
+        dag = tmp_path / "out.dag"
+        assert run_cli("convert", str(dag), "--dir", str(tmp_path)) == 0
+
+    def test_dir_creates_dag(self, make_sub, tmp_path):
+        make_sub("a", outputs=["x.txt"])
+        dag = tmp_path / "out.dag"
+        run_cli("convert", str(dag), "--dir", str(tmp_path))
+        assert dag.exists()
+
+    def test_no_input_source_exits_2(self, tmp_path):
+        dag = tmp_path / "out.dag"
+        assert run_cli("convert", str(dag)) == 2
+
+    def test_empty_dir_exits_2(self, tmp_path):
+        dag = tmp_path / "out.dag"
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert run_cli("convert", str(dag), "--dir", str(empty)) == 2
+
+    def test_jdl_and_dir_combined(self, make_sub, tmp_path):
+        a = make_sub("a", outputs=["link.txt"])
+        d = tmp_path / "more"
+        d.mkdir()
+        b = make_sub("b", inputs=["link.txt"])
+        b.rename(d / "b.sub")
+        dag = tmp_path / "out.dag"
+        assert run_cli("convert", str(dag), "--jdl", str(a), "--dir", str(d)) == 0
+
+
 class TestErrorHandling:
     def test_missing_jdl_file_exits_125(self, tmp_path):
         dag = tmp_path / "out.dag"

@@ -30,6 +30,7 @@ from typing import Tuple, Callable
 from htflow.dataflow import HTCondorDataFlow, AssumptionError
 from htflow.dag import Dag
 from htflow.engines.engine import Engine, EngineExecutionError
+from htflow.sources import collect_jdl_files, InputError
 
 EXIT_SETUP_FAILURE = 125
 EXIT_ENGINE_ACTIVE = 75
@@ -276,9 +277,18 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
     common_parser.add_argument(
         "--jdl",
         nargs="+",
-        required=True,
+        required=False,
+        default=None,
         metavar="PATH",
         help="One or more HTCondor submit files to process",
+    )
+    common_parser.add_argument(
+        "--dir", "--directory", "-d",
+        dest="dir",
+        nargs="+",
+        default=None,
+        metavar="DIR",
+        help="Directory to scan for supported HTCondor submit files",
     )
     common_parser.add_argument(
         "--job-shapes",
@@ -391,6 +401,12 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
     except UnknownCommandError:
         parser.print_help()
         sys.exit(EXIT_SETUP_FAILURE)
+
+    if hasattr(args, "jdl"):
+        try:
+            args.jdl = collect_jdl_files(args)
+        except InputError as e:
+            parser.error(str(e))
 
     return (args, action)
 
