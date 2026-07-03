@@ -16,10 +16,11 @@ pip install -e .
 pip install pytest
 ```
 
-> **Note:** Some tests require the `htcondor` Python package. Install it if it is available for your platform:
+> **Note:** Some tests exercise the real `htcondor` Python package. It only publishes Linux wheels (no arm64 macOS build), so install it where available:
 > ```sh
 > pip install -e ".[htcondor]"
 > ```
+> If it isn't importable, `conftest.py` transparently injects a minimal mock so the suite still runs. Every `pytest` run prints which one was used via a report header line (`htcondor2 bindings: REAL package (...)` or `MOCK stub (...)`).
 
 ---
 
@@ -48,7 +49,7 @@ Run a specific test by name:
 ctest -R test_change_directory
 ```
 
-CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`.
+CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_execute`, `test_sources`.
 
 ---
 
