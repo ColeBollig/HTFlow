@@ -48,10 +48,23 @@ At least one input source must be supplied to any command that processes JDL fil
 
 | Flag | Description |
 |---|---|
-| `--jdl PATH [...]` | Explicit submit file paths |
-| `--dir DIR [...]` / `-d` | Directory to scan for `*.sub` files (top-level) |
+| `--jdl PATH [...]` | Explicit submit file paths. May be repeated (`--jdl a.sub --jdl b.sub`). |
+| `--dir DIR [...]` / `-d` | Directory to scan for dataflow input sources (top-level only). May be repeated, same as `--jdl`. |
 
 Both flags may be combined; duplicates are deduplicated with a warning.
+
+`--dir` treats **every file** in the scanned directory as a JDL submit file by default — regardless of extension, including files with no extension at all — except for extensions with a specific parser override registered (see [`docs/sources.md`](docs/sources.md)). Each candidate is opened and parsed as an HTCondor submit description; files that fail to parse are skipped with a printed message rather than aborting the scan or being included as bogus nodes.
+
+---
+
+## Execution & Path Resolution
+
+By default, relative paths inside a submit file (`executable`, `transfer_input_files`, etc.) resolve against **HTFlow's own current working directory** — not the directory the JDL file happens to live in:
+
+- `htflow execute manual` spawns each task without changing directories.
+- `htflow convert` writes `JOB` lines with each submit file's absolute path and no DAGMan `DIR` clause.
+
+Pass `--relative-to-source` to restore the opposite behavior — each JDL's own directory becomes the base for its relative paths (a per-task `chdir` for `execute`, a DAGMan `DIR <directory>` clause for `convert`). Both behaviors are driven by a single shared `ExecutionConfig` object; see [`docs/config.md`](docs/config.md).
 
 ---
 
@@ -62,7 +75,8 @@ Both flags may be combined; duplicates are deduplicated with a warning.
 | [`docs/cli.md`](docs/cli.md) | All commands, flags, and exit codes |
 | [`docs/dataflow.md`](docs/dataflow.md) | `HTCondorDataFlow` API and enforced assumptions |
 | [`docs/engines.md`](docs/engines.md) | Engine lifecycle, locking, recovery, and `ManualEngine` |
-| [`docs/sources.md`](docs/sources.md) | JDL collection architecture and extension guide |
+| [`docs/sources.md`](docs/sources.md) | Input file collection architecture and extension guide |
+| [`docs/config.md`](docs/config.md) | `ExecutionConfig` — shared dataflow/execution behavior settings |
 | [`docs/dag.md`](docs/dag.md) | DAG data structure |
 | [`docs/utils/directory.md`](docs/utils/directory.md) | `ChangeDir` context manager |
 
@@ -76,3 +90,7 @@ When `execute` runs, it creates a `flowman/` directory in the current working di
 - `manual.state` — completion log used by `Recover()` to resume interrupted runs
 
 Run `htflow cleanup` to remove this directory once a workflow is complete.
+
+---
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and running tests.
