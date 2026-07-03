@@ -55,20 +55,23 @@ jobs:
         if: runner.os == 'Linux'
         run: python3 -m pip install htcondor
 
-      # macOS has no htcondor wheel. Install the official tarball as root,
-      # following https://htcondor.readthedocs.io/en/latest/getting-htcondor/install-macos-as-root.html
-      # just enough to expose the Python bindings (no daemons needed for tests).
-      # Best-effort: if this fails, PYTHONPATH is never set and htcondor2 stays
-      # unimportable, so tests/conftest.py falls back to its mock automatically.
-      - name: Install HTCondor (macOS only, best-effort)
-        if: runner.os == 'macOS'
-        continue-on-error: true
-        run: |
-          cd "$RUNNER_TEMP"
-          curl -fsSL https://get.htcondor.org | /bin/bash -s -- --download
-          sudo mkdir -p /usr/local/condor
-          sudo tar -x -C /usr/local/condor --no-same-owner --strip-components 1 -f condor.tar.gz
-          echo "PYTHONPATH=/usr/local/condor/lib/python3" >> "$GITHUB_ENV"
+      # macOS has no htcondor wheel, and get.htcondor.org's install script
+      # hardcodes ARCH=x86_64 for macOS with no arm64/aarch64 branch -- the
+      # tarball it serves cannot load on GitHub's macos-latest runner (Apple
+      # Silicon/arm64), so import htcondor2 would always fail here regardless
+      # of how it's installed. Left commented out (not deleted) so this can
+      # be re-enabled if HTCondor ever publishes an arm64 macOS tarball;
+      # tests/conftest.py's mock stub covers macOS in the meantime.
+      #
+      # - name: Install HTCondor (macOS only, best-effort)
+      #   if: runner.os == 'macOS'
+      #   continue-on-error: true
+      #   run: |
+      #     cd "$RUNNER_TEMP"
+      #     curl -fsSL https://get.htcondor.org | /bin/bash -s -- --download
+      #     sudo mkdir -p /usr/local/condor
+      #     sudo tar -x -C /usr/local/condor --no-same-owner --strip-components 1 -f condor.tar.gz
+      #     echo "PYTHONPATH=/usr/local/condor/lib/python3" >> "$GITHUB_ENV"
 
       - name: Report HTCondor bindings source
         run: |
