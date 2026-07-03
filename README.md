@@ -66,6 +66,8 @@ By default, relative paths inside a submit file (`executable`, `transfer_input_f
 
 Pass `--relative-to-source` to restore the opposite behavior — each JDL's own directory becomes the base for its relative paths (a per-task `chdir` for `execute`, a DAGMan `DIR <directory>` clause for `convert`). Both behaviors are driven by a single shared `ExecutionConfig` object; see [`docs/config.md`](docs/config.md).
 
+The same flag also governs where job-type-shape resolved submit files land — see [Engine Working Directory](#engine-working-directory) below.
+
 ---
 
 ## Documentation
@@ -88,6 +90,7 @@ When `execute` runs, it creates a `flowman/` directory in the current working di
 
 - `flowman.lock` — exclusive file lock preventing concurrent engine runs
 - `manual.state` — completion log used by `Recover()` to resume interrupted runs
+- `produced/resolved/` — job-type-shape resolved submit files, created by `execute` **or** `convert` whenever a `JobType` shape changes a node's transfer lists (see [Job Type Shapes](docs/dataflow.md#job-type-shapes)) and `--relative-to-source` isn't set. Only created when there's actually something to resolve.
 
 Run `htflow cleanup` to remove this directory once a workflow is complete.
 

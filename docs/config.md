@@ -24,6 +24,7 @@ ExecutionConfig(relative_to_source: bool = False)
 |----------------------------------------|-------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
 | `HTCondorDataFlow.write()`             | `JOB` lines reference the submit file by absolute path; no `DIR` clause is emitted | `JOB` lines reference the submit file by name; a `DIR <directory>` clause is added when the JDL's directory differs from cwd |
 | `ManualEngine` / `ManualNode.Execute()` | The spawned task inherits HTFlow's own current working directory                   | The spawned task is run with its JDL's parent directory as its working directory             |
+| Job-type-shape resolved files (`HTCondorDataFlow.__resolve()`) | Centralized under `Engine.work_dir() / "produced" / "resolved"`, siloed into numbered subdirectories when filenames collide across source directories | Written alongside the original JDL, as in earlier versions |
 
 ### Usage
 

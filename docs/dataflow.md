@@ -196,7 +196,9 @@ Both `InputFiles` and `OutputFiles` are optional within a type entry. Any files 
 1. If a JDL file contains `JobType = <name>`, `<name>` must appear as a key in `job_shapes` — otherwise `AssumptionError(COMPLETE_LIST)` is raised.
 2. Files from the matching shape entry are merged into the node's transfer lists.
 3. The same URL and macro assumptions (NO_URL, NO_MACROS) apply to shape file lists.
-4. When a shape changes a node's transfer lists, the resolved submit description is written to a `.resolved` file alongside the original JDL, and the DAG node's internal path is updated to point at it.
+4. When a shape changes a node's transfer lists, the resolved submit description is written to a new `<name>.resolved` file, and the DAG node's internal path is updated to point at it. Where that file lands depends on `config.relative_to_source`:
+   - **`relative_to_source=False` (default)** — all resolved files are centralized under `Engine.work_dir() / "produced" / "resolved"` (i.e. `flowman/produced/resolved/`), regardless of where their source JDLs came from. If two or more JDLs needing resolution share the same filename but came from different source directories, each distinct source directory is assigned its own numbered subdirectory (`1/`, `2/`, …, in order of first appearance) so their resolved outputs don't collide; JDLs whose filename doesn't collide with anything are written flat at the top of `resolved/`. Directories are only created as needed — nothing is written if no shape changes any transfer list.
+   - **`relative_to_source=True`** — the resolved file is written directly alongside the original JDL, as in earlier versions.
 
 ### Example
 

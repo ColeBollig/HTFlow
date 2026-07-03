@@ -26,6 +26,7 @@ import htcondor2
 import enum
 from . import dag
 from .config import ExecutionConfig
+from .engines.engine import Engine
 import copy
 
 from pathlib import Path
@@ -208,11 +209,53 @@ class HTCondorDataFlow():
         self._f2n_table.clear()
         self._dag = None
 
+    def __write_resolved(self, pending: List[Tuple[dag.Node, htcondor2.Submit]]) -> None:
+        """Write resolved job-type-shape submit files for nodes whose transfer lists changed.
+
+        Under relative_to_source, each file is written beside its original JDL, as before.
+        Otherwise all resolved files are centralized under the engine working directory;
+        JDLs sharing a basename but originating from different source directories are
+        siloed into numbered subdirectories (mapped 1:1 to their source directory) so
+        they don't collide, while non-colliding files are written flat.
+        """
+        if self._config.relative_to_source:
+            for node, desc in pending:
+                new_jdl = node.internal.with_suffix(node.internal.suffix + ".resolved")
+                with open(new_jdl, "w") as f:
+                    f.write(str(desc))
+                node.internal = new_jdl
+            return
+
+        dirs_by_name: Dict[str, Set[Path]] = {}
+        for node, _ in pending:
+            dirs_by_name.setdefault(node.internal.name, set()).add(node.internal.parent)
+
+        colliding_dirs = {d for dirs in dirs_by_name.values() if len(dirs) > 1 for d in dirs}
+
+        silo_of_dir: Dict[Path, int] = {}
+        for node, _ in pending:
+            src_dir = node.internal.parent
+            if src_dir in colliding_dirs and src_dir not in silo_of_dir:
+                silo_of_dir[src_dir] = len(silo_of_dir) + 1
+
+        resolved_root = Engine.work_dir() / "produced" / "resolved"
+
+        for node, desc in pending:
+            src_dir = node.internal.parent
+            target_dir = resolved_root / str(silo_of_dir[src_dir]) if src_dir in silo_of_dir else resolved_root
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            new_jdl = target_dir / (node.internal.name + ".resolved")
+            with open(new_jdl, "w") as f:
+                f.write(str(desc))
+            node.internal = new_jdl
+
     def __resolve(self) -> None:
         """Produce node table from list of JDL files"""
         self.__reset()
 
         outfile_node = {}
+        pending_resolutions = []
 
         self._dag = dag.Dag()
         for i, jdl in enumerate(self._files):
@@ -281,10 +324,7 @@ class HTCondorDataFlow():
                         desc["transfer_output_files"] = ",".join(outfiles)
 
                     if had_change:
-                        new_jdl = node.internal.with_suffix(node.internal.suffix + ".resolved")
-                        with open(new_jdl, "w") as f:
-                            f.write(str(desc))
-                        node.internal = new_jdl
+                        pending_resolutions.append((node, desc))
 
             # Process output file list
             for f in outfiles:
@@ -306,6 +346,9 @@ class HTCondorDataFlow():
                     self._f2n_table[infile][1].append(node.id)
                 else:
                     self._f2n_table[infile] = (None, [node.id])
+
+        if pending_resolutions:
+            self.__write_resolved(pending_resolutions)
 
         for _, info in self._f2n_table.items():
             parent, children = info

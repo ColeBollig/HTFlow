@@ -91,7 +91,7 @@ class TestConvert:
         shapes_file = tmp_path / "shapes.json"
         shapes_file.write_text(json.dumps({"worker": {"OutputFiles": "out.txt"}}))
         dag = tmp_path / "out.dag"
-        run_cli("convert", str(dag), "--jdl", str(a), str(b), "--job-shapes", str(shapes_file))
+        run_cli("convert", str(dag), "--jdl", str(a), str(b), "--job-shapes", str(shapes_file), cwd=tmp_path)
         assert "PARENT NODE-0 CHILD NODE-1" in dag.read_text()
 
     def test_prints_output_path(self, make_sub, tmp_path, capsys):

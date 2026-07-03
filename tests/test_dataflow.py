@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from htflow.dataflow import HTCondorDataFlow, AssumptionError, Assumption
 from htflow.config import ExecutionConfig
+from htflow.engines.engine import Engine
 from htflow.utils.directory import ChangeDir
 
 
@@ -673,6 +674,13 @@ class TestWrite:
 # ---------------------------------------------------------------------------
 
 class TestJobTypeShapes:
+    @pytest.fixture(autouse=True)
+    def _isolate_cwd(self, tmp_path):
+        """Resolved shape files now centralize under Engine.work_dir() (a relative
+        'flowman' path); confine that to tmp_path instead of the real process cwd."""
+        with ChangeDir(tmp_path):
+            yield
+
     def test_unknown_job_type_raises_complete_list(self, make_sub):
         f = make_sub("a", extra="JobType = unknown")
         with pytest.raises(AssumptionError) as exc:
@@ -714,15 +722,19 @@ class TestJobTypeShapes:
         a = make_sub("a", extra="JobType = worker")
         shapes = {"worker": {"OutputFiles": "result.txt"}}
         d = HTCondorDataFlow(files=[a], job_shapes=shapes).generate()
-        resolved = a.with_suffix(a.suffix + ".resolved")
+        resolved = Engine.work_dir() / "produced" / "resolved" / (a.name + ".resolved")
         assert resolved.exists()
         assert d[0].internal == resolved
+        # No original-directory-adjacent file, and nothing written next to the source
+        assert not a.with_suffix(a.suffix + ".resolved").exists()
 
     def test_no_resolved_jdl_when_shape_has_no_file_keys(self, make_sub):
         a = make_sub("a", extra="JobType = worker")
         d = HTCondorDataFlow(files=[a], job_shapes={"worker": {}}).generate()
         assert not a.with_suffix(a.suffix + ".resolved").exists()
         assert d[0].internal == a
+        # Nothing should be created at all when there's nothing to resolve
+        assert not Engine.work_dir().exists()
 
     def test_url_in_shape_input_raises(self, make_sub):
         a = make_sub("a", extra="JobType = worker")
@@ -757,3 +769,78 @@ class TestJobTypeShapes:
         d2 = df.generate()
         assert d1[1].id in d1[0].children
         assert d2[1].id in d2[0].children
+
+
+# ---------------------------------------------------------------------------
+# Resolved file placement/siloing (default vs relative_to_source)
+# ---------------------------------------------------------------------------
+
+class TestResolvedFileSiloing:
+    @pytest.fixture(autouse=True)
+    def _isolate_cwd(self, tmp_path):
+        with ChangeDir(tmp_path):
+            yield
+
+    @staticmethod
+    def _write_sub(path, *, job_type):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"executable = example.sh\nJobType = {job_type}\nqueue\n")
+        return path
+
+    def test_colliding_basenames_from_different_dirs_get_siloed(self, tmp_path):
+        f_g = self._write_sub(tmp_path / "f" / "g.sub", job_type="worker")
+        h_g = self._write_sub(tmp_path / "h" / "g.sub", job_type="worker")
+        shapes = {"worker": {"InputFiles": "shared_in.txt"}}
+        d = HTCondorDataFlow(files=[f_g, h_g], job_shapes=shapes).generate()
+
+        root = Engine.work_dir() / "produced" / "resolved"
+        assert d[0].internal == root / "1" / "g.sub.resolved"
+        assert d[1].internal == root / "2" / "g.sub.resolved"
+
+    def test_non_colliding_basenames_are_flattened(self, tmp_path):
+        c_d = self._write_sub(tmp_path / "c" / "d.sub", job_type="worker")
+        c_e = self._write_sub(tmp_path / "c" / "e.sub", job_type="worker")
+        shapes = {"worker": {"InputFiles": "shared_in.txt"}}
+        d = HTCondorDataFlow(files=[c_d, c_e], job_shapes=shapes).generate()
+
+        root = Engine.work_dir() / "produced" / "resolved"
+        assert d[0].internal == root / "d.sub.resolved"
+        assert d[1].internal == root / "e.sub.resolved"
+
+    def test_full_example_matches_expected_layout(self, tmp_path):
+        a   = self._write_sub(tmp_path / "a.sub", job_type="worker")
+        b   = self._write_sub(tmp_path / "b.sub", job_type="worker")
+        c_d = self._write_sub(tmp_path / "c" / "d.sub", job_type="worker")
+        c_e = self._write_sub(tmp_path / "c" / "e.sub", job_type="worker")
+        f_g = self._write_sub(tmp_path / "f" / "g.sub", job_type="worker")
+        h_g = self._write_sub(tmp_path / "h" / "g.sub", job_type="worker")
+        f_t = self._write_sub(tmp_path / "f" / "t.sub", job_type="worker")
+        h_t = self._write_sub(tmp_path / "h" / "t.sub", job_type="worker")
+
+        shapes = {"worker": {"InputFiles": "shared_in.txt"}}
+        files = [a, b, c_d, c_e, f_g, h_g, f_t, h_t]
+        d = HTCondorDataFlow(files=files, job_shapes=shapes).generate()
+
+        root = Engine.work_dir() / "produced" / "resolved"
+        expected = [
+            root / "a.sub.resolved",
+            root / "b.sub.resolved",
+            root / "d.sub.resolved",
+            root / "e.sub.resolved",
+            root / "1" / "g.sub.resolved",
+            root / "2" / "g.sub.resolved",
+            root / "1" / "t.sub.resolved",
+            root / "2" / "t.sub.resolved",
+        ]
+        assert [node.internal for node in d] == expected
+
+    def test_relative_to_source_writes_beside_original_no_siloing(self, tmp_path):
+        f_g = self._write_sub(tmp_path / "f" / "g.sub", job_type="worker")
+        h_g = self._write_sub(tmp_path / "h" / "g.sub", job_type="worker")
+        shapes = {"worker": {"InputFiles": "shared_in.txt"}}
+        config = ExecutionConfig(relative_to_source=True)
+        d = HTCondorDataFlow(files=[f_g, h_g], job_shapes=shapes, config=config).generate()
+
+        assert d[0].internal == f_g.with_suffix(f_g.suffix + ".resolved")
+        assert d[1].internal == h_g.with_suffix(h_g.suffix + ".resolved")
+        assert not Engine.work_dir().exists()
