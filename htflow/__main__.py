@@ -29,6 +29,7 @@ from typing import Tuple, Callable
 
 from htflow.dataflow import HTCondorDataFlow, AssumptionError
 from htflow.dag import Dag
+from htflow.config import ExecutionConfig
 from htflow.engines.engine import Engine, EngineExecutionError
 from htflow.sources import collect_jdl_files, InputError
 
@@ -107,7 +108,7 @@ def cmd_execute(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     try:
-        engine = engine_cls(dag)
+        engine = engine_cls(dag, config=df.config)
     except EngineExecutionError as e:
         logger.error("Engine startup failed: %s", e)
         sys.exit(EXIT_ENGINE_ACTIVE)
@@ -299,6 +300,19 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
         metavar="PATH",
         help="Path to JSON file containing special job type shapes",
     )
+    common_parser.add_argument(
+        "--relative-to-source",
+        dest="relative_to_source",
+        action="store_true",
+        default=False,
+        help=(
+            "Resolve relative paths in each submit file against the submit "
+            "file's own directory instead of the current working directory. "
+            "For 'execute', the task is run from its JDL's directory. For "
+            "'convert', a DAGMan DIR clause is added pointing at the JDL's "
+            "directory."
+        ),
+    )
 
     # Actions commands (i.e. execute, convert, show, etc)
     subparsers = parser.add_subparsers(dest="command")
@@ -420,7 +434,8 @@ def main() -> None:
             action(args)
             return
 
-        df = HTCondorDataFlow(files=args.jdl)
+        config = ExecutionConfig(relative_to_source=args.relative_to_source)
+        df = HTCondorDataFlow(files=args.jdl, config=config)
         if args.job_shapes:
             with open(args.job_shapes, "r") as f:
                 df.shapes = json.load(f)

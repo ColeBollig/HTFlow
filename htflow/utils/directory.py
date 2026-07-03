@@ -33,16 +33,19 @@ class ChangeDir:
         if not isinstance(var, (pathlib.Path, str)):
             raise TypeError("ChangeDir only functions with pathlib.Path and string types")
 
-    def __init__(self, dest: Union[pathlib.Path, str]) -> None:
+    def __init__(self, dest: Union[pathlib.Path, str], enabled: bool = True) -> None:
         """Initialize a temporary directory change object to specified destination directory"""
         self.__check_type(dest)
+        if not isinstance(enabled, bool):
+            raise TypeError("ChangeDir enabled flag must be a bool")
 
         self.destination = pathlib.Path(dest)
+        self.enabled = enabled
         self.origin = None
 
     def __enter__(self) -> ChangeDir:
         """Temporarily switch to destination directory"""
-        if self.destination.resolve() != pathlib.Path.cwd().resolve():
+        if self.enabled and self.destination.resolve() != pathlib.Path.cwd().resolve():
             logger.debug("[ENTER] Switching directory to %s", self.destination)
             self.origin = pathlib.Path.cwd()
             os.chdir(self.destination)

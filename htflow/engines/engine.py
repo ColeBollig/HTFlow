@@ -18,6 +18,8 @@ from pathlib import Path
 
 import fcntl
 
+from ..config import ExecutionConfig
+
 
 class EngineExecutionError(Exception):
     pass
@@ -32,8 +34,9 @@ class Engine(ABC):
     def lock_file(cls) -> Path:
         return cls.work_dir() / "flowman.lock"
 
-    def __init__(self) -> None:
+    def __init__(self, config: Optional[ExecutionConfig] = None) -> None:
         """High level common engine initialization"""
+        self.config = config or ExecutionConfig()
         self._work_dir = self.work_dir()
         self._work_dir.mkdir(exist_ok=True)
         self._lock_fp = None

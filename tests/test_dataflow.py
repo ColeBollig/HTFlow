@@ -16,6 +16,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from htflow.dataflow import HTCondorDataFlow, AssumptionError, Assumption
+from htflow.config import ExecutionConfig
 from htflow.utils.directory import ChangeDir
 
 
@@ -29,6 +30,11 @@ class TestInit:
         assert df.files == []
         assert df.filename == "dataflow.dag"
         assert df.shapes == {}
+        assert df.config == ExecutionConfig()
+
+    def test_custom_config_stored(self):
+        config = ExecutionConfig(relative_to_source=True)
+        assert HTCondorDataFlow(config=config).config == config
 
     def test_custom_job_shapes_stored(self):
         shapes = {"worker": {"InputFiles": "a.txt"}}
@@ -542,15 +548,15 @@ class TestWrite:
         content = dag_path.read_text()
         assert content.count("JOB NODE-0") == 1
 
-    def test_job_line_dir_clause_added_for_absolute_path(self, make_sub, tmp_path):
+    def test_job_line_uses_absolute_path_for_jdl_elsewhere(self, make_sub, tmp_path):
         a = make_sub("a")
         dag_path = tmp_path / "out.dag"
         HTCondorDataFlow(files=[a], filename=str(dag_path)).write()
         content = dag_path.read_text()
-        assert f"DIR {a.parent}" in content
-        assert f"JOB NODE-0 {a.name} DIR" in content
+        assert "DIR" not in content
+        assert f"JOB NODE-0 {a.resolve()}" in content
 
-    def test_job_line_no_dir_when_jdl_in_cwd(self, tmp_path):
+    def test_job_line_uses_absolute_path_when_jdl_in_cwd(self, tmp_path):
         sub = tmp_path / "a.sub"
         sub.write_text("executable = example.sh\nqueue\n")
         dag_path = tmp_path / "out.dag"
@@ -558,8 +564,9 @@ class TestWrite:
             HTCondorDataFlow(files=[sub], filename=str(dag_path)).write()
         content = dag_path.read_text()
         assert "DIR" not in content
+        assert f"JOB NODE-0 {sub.resolve()}" in content
 
-    def test_job_line_dir_preserves_relative_path(self, tmp_path):
+    def test_job_line_resolves_relative_jdl_path(self, tmp_path):
         subdir = tmp_path / "subdir"
         subdir.mkdir()
         sub = subdir / "a.sub"
@@ -568,8 +575,28 @@ class TestWrite:
         with ChangeDir(tmp_path):
             HTCondorDataFlow(files=[Path("subdir/a.sub")], filename=str(dag_path)).write()
         content = dag_path.read_text()
-        assert "DIR subdir" in content
-        assert "JOB NODE-0 a.sub DIR subdir" in content
+        assert "DIR" not in content
+        assert f"JOB NODE-0 {sub.resolve()}" in content
+
+    def test_relative_to_source_adds_dir_clause_for_jdl_elsewhere(self, make_sub, tmp_path):
+        a = make_sub("a")
+        dag_path = tmp_path / "out.dag"
+        config = ExecutionConfig(relative_to_source=True)
+        HTCondorDataFlow(files=[a], filename=str(dag_path), config=config).write()
+        content = dag_path.read_text()
+        assert f"DIR {a.parent}" in content
+        assert f"JOB NODE-0 {a.name} DIR" in content
+
+    def test_relative_to_source_no_dir_when_jdl_in_cwd(self, tmp_path):
+        sub = tmp_path / "a.sub"
+        sub.write_text("executable = example.sh\nqueue\n")
+        dag_path = tmp_path / "out.dag"
+        config = ExecutionConfig(relative_to_source=True)
+        with ChangeDir(tmp_path):
+            HTCondorDataFlow(files=[sub], filename=str(dag_path), config=config).write()
+        content = dag_path.read_text()
+        assert "DIR" not in content
+        assert "JOB NODE-0 a.sub" in content
 
     def test_shared_children_grouped_by_parent_set(self, make_sub, tmp_path):
         p1  = make_sub("p1",  outputs=["x.txt"])

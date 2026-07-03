@@ -319,3 +319,35 @@ class TestExecuteLocked:
         finally:
             fcntl.flock(fp, fcntl.LOCK_UN)
             fp.close()
+
+
+# ---------------------------------------------------------------------------
+# --relative-to-source: task execution directory
+# ---------------------------------------------------------------------------
+
+class TestExecuteRelativeToSource:
+    def _make_jdl_in_subdir(self, subdir, task_script):
+        subdir.mkdir()
+        jdl = subdir / "a.sub"
+        jdl.write_text(
+            f"executable = python3\n"
+            f"arguments = {task_script} --id 1 --log exec.log --exit-code 0\n"
+            "queue\n"
+        )
+        return jdl
+
+    def test_default_runs_from_htflow_cwd(self, tmp_path, task_script, htflow_log):
+        subdir = tmp_path / "sub"
+        jdl = self._make_jdl_in_subdir(subdir, task_script)
+
+        assert run_execute("--jdl", str(jdl), log_file=htflow_log) == 0
+        assert (tmp_path / "exec.log").exists()
+        assert not (subdir / "exec.log").exists()
+
+    def test_flag_runs_from_jdl_directory(self, tmp_path, task_script, htflow_log):
+        subdir = tmp_path / "sub"
+        jdl = self._make_jdl_in_subdir(subdir, task_script)
+
+        assert run_execute("--relative-to-source", "--jdl", str(jdl), log_file=htflow_log) == 0
+        assert (subdir / "exec.log").exists()
+        assert not (tmp_path / "exec.log").exists()

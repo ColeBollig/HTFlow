@@ -9,12 +9,13 @@ A context manager that temporarily changes the current working directory, then r
 ### Constructor
 
 ```python
-ChangeDir(dest: Union[Path, str])
+ChangeDir(dest: Union[Path, str], enabled: bool = True)
 ```
 
-| Parameter | Type            | Description                       |
-|-----------|-----------------|-----------------------------------|
-| `dest`    | `Path` or `str` | Directory to switch into on entry |
+| Parameter | Type            | Description                                                    |
+|-----------|-----------------|------------------------------------------------------------------|
+| `dest`    | `Path` or `str` | Directory to switch into on entry                               |
+| `enabled` | `bool`          | When `False`, the context manager is a no-op — no `chdir` occurs on entry or exit, and `origin` stays `None`. Defaults to `True`. |
 
 ### Usage
 
@@ -78,4 +79,14 @@ This comparison uses `.resolve()` on both sides, so relative paths, `"."`, and s
 with ChangeDir("/tmp/workdir") as cd:
     assert cd.origin is None   # no chdir happened
     # cwd is still /tmp/workdir
+```
+
+### Disabling the directory change
+
+Passing `enabled=False` skips the `chdir` entirely, regardless of `dest`. This lets callers toggle the directory-switching behavior with a boolean flag instead of branching between a `with ChangeDir(...):` block and a bare call:
+
+```python
+with ChangeDir("/tmp/workdir", enabled=some_flag):
+    # cwd only changes if some_flag is True
+    ...
 ```

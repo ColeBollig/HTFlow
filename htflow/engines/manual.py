@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .engine import Engine
+from ..config import ExecutionConfig
 from ..utils.directory import ChangeDir
 from .. import dag
 from typing import Set, Optional
@@ -36,12 +37,13 @@ class ManualNodeState(enum.Enum):
 
 
 class ManualNode():
-    def __init__(self, node: dag.Node) -> None:
+    def __init__(self, node: dag.Node, config: Optional[ExecutionConfig] = None) -> None:
         if not isinstance(node, dag.Node):
             raise ValueError("node must be dag.Node")
 
         self._node = node
         self._jdl = node.internal
+        self._config = config or ExecutionConfig()
         self._proc = None
         self._state = ManualNodeState.BLOCKED
         self._waiting_on = None if node.parents is None else set(node.parents)
@@ -122,8 +124,6 @@ class ManualNode():
         with open(self._jdl, "r") as f:
             desc = htcondor2.Submit(f.read())
 
-        origin = Path(self._jdl).parent.resolve()
-
         cmd = [ desc.expand("executable") ]
         args = desc.expand("arguments") or ""
 
@@ -134,7 +134,8 @@ class ManualNode():
 
         logger.info("Executing: %s", " ".join(cmd))
 
-        with ChangeDir(origin):
+        origin = Path(self._jdl).parent.resolve()
+        with ChangeDir(origin, enabled=self._config.relative_to_source):
             self._proc = subprocess.Popen(
                 cmd,
                 stdout = subprocess.DEVNULL,
@@ -204,8 +205,8 @@ class ManualEngine(Engine):
     EXIT_SUCCESS = 0
     EXIT_FAILURE = 1
 
-    def __init__(self, dag: dag.Dag) -> None:
-        super().__init__()
+    def __init__(self, dag: dag.Dag, config: Optional[ExecutionConfig] = None) -> None:
+        super().__init__(config)
 
         self.AcquireLock()
 
@@ -213,7 +214,7 @@ class ManualEngine(Engine):
             self._dag = dag
             self._dag.internal = ManualDag()
             for node in self._dag:
-                node.internal = ManualNode(node)
+                node.internal = ManualNode(node, config=self.config)
 
             self._had_failure = False
 

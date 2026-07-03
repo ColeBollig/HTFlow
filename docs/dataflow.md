@@ -49,7 +49,8 @@ Assumption <N> Violated: <description> in <path>
 HTCondorDataFlow(
     files: List[Union[Path, str]] = [],
     filename: str = "dataflow.dag",
-    job_shapes: Dict[str, Dict[str, str]] = {}
+    job_shapes: Dict[str, Dict[str, str]] = {},
+    config: Optional[ExecutionConfig] = None
 )
 ```
 
@@ -58,6 +59,7 @@ HTCondorDataFlow(
 | `files`      | `list` of `Path`/`str`        | HTCondor submit files to analyse                                   |
 | `filename`   | `str`                         | Output path for the generated DAGMan file                          |
 | `job_shapes` | `dict[str, dict[str, str]]`   | Job type shape definitions; see [Job Type Shapes](#job-type-shapes)|
+| `config`     | `Optional[ExecutionConfig]`   | Shared static configuration controlling dataflow/execution behavior; see [`htflow.config`](config.md). Defaults to `ExecutionConfig()` when omitted. |
 
 ### Properties
 
@@ -66,6 +68,7 @@ HTCondorDataFlow(
 | `files`      | `List[Path]`                                                     | Current list of JDL files (also settable)                      |
 | `filename`   | `str`                                                            | Output DAG filename (also settable)                            |
 | `shapes`     | `Dict[str, Dict[str, str]]`                                      | Job type shape definitions (also settable)                     |
+| `config`     | `ExecutionConfig`                                                 | Shared static configuration controlling dataflow/execution behavior (read-only) |
 | `types`      | `Set[str]`                                                       | Set of distinct `JobType` values found across all JDL files    |
 | `dag`        | `Optional[dag.Dag]`                                              | The internal DAG, populated after calling `generate()`         |
 | `mapping`    | `Dict[Union[Path, str], Tuple[Optional[int], Optional[List[int]]]]` | Maps each file to `(source_node_id, [dependent_node_ids])`. Local files are keyed by `Path`; URL-scheme files (`osdf://`, `pelican://`) are keyed by their original string. |
@@ -93,7 +96,12 @@ dag = HTCondorDataFlow(files=["a.sub", "b.sub"]).generate()
 
 Runs `generate()` internally and writes an HTCondor DAGMan file to `filename`. Returns the `Path` of the written file.
 
-The generated file contains a `JOB` entry for every node followed by `PARENT … CHILD …` lines for every dependency edge. When a JDL file's parent directory differs from the current working directory, a `DIR <directory>` clause is appended to its `JOB` line so DAGMan submits the job from the correct location. Children that share an identical set of parents are collapsed onto a single `PARENT … CHILD …` line.
+The generated file contains a `JOB` entry for every node followed by `PARENT … CHILD …` lines for every dependency edge. Children that share an identical set of parents are collapsed onto a single `PARENT … CHILD …` line.
+
+The `JOB` line's form depends on `config.relative_to_source`:
+
+- **`relative_to_source=False` (default)** — each `JOB` line references its submit file by absolute path, so JDL files may live anywhere on disk. No `DIR` clause is emitted, so relative paths inside a submit file (e.g. `executable`, `transfer_input_files`) resolve against wherever `condor_submit_dag` is invoked from, not against the JDL's own directory.
+- **`relative_to_source=True`** — each `JOB` line references its submit file by bare filename. When the JDL's parent directory differs from the current working directory, a `DIR <directory>` clause is appended so DAGMan submits (and resolves relative paths for) that job from the JDL's own directory.
 
 ```python
 path = HTCondorDataFlow(files=["a.sub", "b.sub"], filename="out.dag").write()

@@ -86,6 +86,29 @@ def test_invalid_type_raises_on_init():
         ChangeDir(42)
 
 
+def test_invalid_enabled_type_raises_on_init(tmp_path):
+    with pytest.raises(TypeError):
+        ChangeDir(tmp_path, enabled="yes")
+
+
+def test_disabled_skips_chdir(tmp_path):
+    original = Path.cwd()
+    with ChangeDir(tmp_path, enabled=False) as cd:
+        assert Path.cwd() == original
+        assert cd.origin is None
+    assert Path.cwd() == original
+
+
+def test_disabled_defaults_enabled_true(tmp_path):
+    cd = ChangeDir(tmp_path)
+    assert cd.enabled is True
+
+
+def test_enabled_flag_stored(tmp_path):
+    cd = ChangeDir(tmp_path, enabled=False)
+    assert cd.enabled is False
+
+
 def test_truediv_returns_path(tmp_path):
     cd = ChangeDir(tmp_path)
     result = cd / "subdir"

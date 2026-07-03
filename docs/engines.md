@@ -29,6 +29,14 @@ The CLI exits with code **75** when this error is raised during engine startup.
 
 These are class methods so tooling (such as `htflow cleanup`) can locate engine paths without instantiating an engine.
 
+### Constructor
+
+```python
+Engine(config: Optional[ExecutionConfig] = None)
+```
+
+Every engine accepts a shared `ExecutionConfig` (see [`htflow.config`](config.md)) — static configuration controlling dataflow/execution behavior. It is exposed as `self.config` and defaults to `ExecutionConfig()` when omitted.
+
 ### Locking
 
 `Engine.__init__()` creates the working directory and calls `AcquireLock()` before any subclass initialisation runs.
@@ -71,10 +79,10 @@ while (code := engine.Terminate()) is None:
 ### Constructor
 
 ```python
-ManualEngine(dag: dag.Dag)
+ManualEngine(dag: dag.Dag, config: Optional[ExecutionConfig] = None)
 ```
 
-The `dag` argument must be a `Dag` produced by `HTCondorDataFlow.generate()`, with each node's `internal` field set to the path of its JDL file. The constructor acquires the working-directory lock, then wraps every node in a `ManualNode` and attaches a `ManualDag` tracker to `dag.internal`. If any post-lock initialisation raises, the lock is released before the exception propagates.
+The `dag` argument must be a `Dag` produced by `HTCondorDataFlow.generate()`, with each node's `internal` field set to the path of its JDL file. The constructor acquires the working-directory lock, then wraps every node in a `ManualNode` (passing along `config`) and attaches a `ManualDag` tracker to `dag.internal`. If any post-lock initialisation raises, the lock is released before the exception propagates.
 
 **Raises** `EngineExecutionError` if the lock cannot be acquired (another engine is running).
 
@@ -105,7 +113,12 @@ Transitions all root nodes (nodes with no parents, and not already marked `SUCCE
 
 #### `Execute()`
 
-Launches a subprocess for every node currently in the `READY` state. If a node's process fails to start, it is immediately transitioned to `FAILURE` and its children are `ORPHAN`ed.
+Launches a subprocess for every node currently in the `READY` state. Each task's `executable`/`arguments` are read from its JDL and spawned via `subprocess.Popen`. Directory behavior depends on `config.relative_to_source`:
+
+- **`relative_to_source=False` (default)** — no directory change occurs; the task inherits HTFlow's own current working directory, so relative paths in the submit file resolve against wherever HTFlow was invoked from, not against the JDL's own directory.
+- **`relative_to_source=True`** — the task is run with the JDL's own parent directory as its working directory (via `ChangeDir`), matching the JDL-colocated behavior.
+
+If a node's process fails to start, it is immediately transitioned to `FAILURE` and its children are `ORPHAN`ed.
 
 #### `Update()`
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import htcondor2
 import enum
 from . import dag
+from .config import ExecutionConfig
 import copy
 
 from pathlib import Path
@@ -64,7 +65,8 @@ class HTCondorDataFlow():
     def __init__(self,
                  files: List[Union[Path, str]] = [],
                  filename: str = "dataflow.dag",
-                 job_shapes: Dict[str, Dict[str, str]] = None
+                 job_shapes: Dict[str, Dict[str, str]] = None,
+                 config: Optional[ExecutionConfig] = None
     ) -> None:
         if not isinstance(files, list) or any([not isinstance(f, (Path, str)) for f in files]):
             raise ValueError("files must be a list of strings and/or pathlib.Path objects")
@@ -81,6 +83,9 @@ class HTCondorDataFlow():
 
         # Mapping of job types -> shapes (input/output lists)
         self._job_type_shapes = job_shapes
+
+        # Shared static configuration controlling dataflow/execution behavior
+        self._config = config or ExecutionConfig()
 
         # Table: Output file -> (Source Node | Dependency Nodes)
         self._f2n_table = {}
@@ -136,6 +141,11 @@ class HTCondorDataFlow():
     def shapes(self, val: Dict[str, Dict[str, str]]) -> None:
         self.__verify_new_types(val)
         self._job_type_shapes = val
+
+    @property
+    def config(self) -> ExecutionConfig:
+        """Get the shared static configuration controlling this dataflow's behavior"""
+        return self._config
 
     @staticmethod
     def __verify_new_types(verify: Dict[str, Dict[str, str]]) -> None:
@@ -322,7 +332,10 @@ class HTCondorDataFlow():
             child_to_parents = {}
             for node in self._dag:
                 jdl = Path(node.internal)
-                declaration = f"JOB {node.name} {jdl.name}" if jdl.parent.resolve() == Path.cwd() else f"JOB {node.name} {jdl.name} DIR {jdl.parent}"
+                if self._config.relative_to_source:
+                    declaration = f"JOB {node.name} {jdl.name}" if jdl.parent.resolve() == Path.cwd() else f"JOB {node.name} {jdl.name} DIR {jdl.parent}"
+                else:
+                    declaration = f"JOB {node.name} {jdl.resolve()}"
                 f.write(f"{declaration}\n")
 
                 # Group children by their parent-set; each unique parent-set gets one PARENT…CHILD line
