@@ -50,10 +50,35 @@ jobs:
       - name: Install package and test dependencies
         run: python3 -m pip install pytest -e .
 
-      # htcondor only publishes Linux wheels; skip on macOS
+      # htcondor only publishes Linux wheels
       - name: Install htcondor (Linux only)
         if: runner.os == 'Linux'
         run: python3 -m pip install htcondor
+
+      # macOS has no htcondor wheel. Install the official tarball as root,
+      # following https://htcondor.readthedocs.io/en/latest/getting-htcondor/install-macos-as-root.html
+      # just enough to expose the Python bindings (no daemons needed for tests).
+      # Best-effort: if this fails, PYTHONPATH is never set and htcondor2 stays
+      # unimportable, so tests/conftest.py falls back to its mock automatically.
+      - name: Install HTCondor (macOS only, best-effort)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL https://get.htcondor.org | /bin/bash -s -- --download
+          sudo mkdir -p /usr/local/condor
+          sudo tar -x -C /usr/local/condor --no-same-owner --strip-components 1 -f condor.tar.gz
+          echo "PYTHONPATH=/usr/local/condor/lib/python3" >> "$GITHUB_ENV"
+
+      - name: Report HTCondor bindings source
+        run: |
+          python3 -c "
+          try:
+              import htcondor2
+              print('Using REAL htcondor2 bindings:', htcondor2.__file__)
+          except ImportError:
+              print('htcondor2 not installed -- tests will fall back to the mock stub')
+          "
 
       - name: Run tests
         run: python3 -m pytest

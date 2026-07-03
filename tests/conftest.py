@@ -23,6 +23,7 @@ from pathlib import Path
 # dataflow logic work correctly without the real package.
 try:
     import htcondor2
+    _HTCONDOR2_SOURCE = f"REAL package ({htcondor2.__file__})"
 except ImportError:
     from unittest.mock import MagicMock
 
@@ -56,6 +57,13 @@ except ImportError:
     _mock = MagicMock()
     _mock.Submit = _Submit
     sys.modules["htcondor2"] = _mock
+    _HTCONDOR2_SOURCE = "MOCK stub (real htcondor2 package not installed)"
+
+
+def pytest_report_header(config):
+    """Print whether tests are running against the real htcondor2 bindings
+    or the fallback mock, so this is obvious in any pytest run's output."""
+    return f"htcondor2 bindings: {_HTCONDOR2_SOURCE}"
 
 
 @pytest.fixture
