@@ -35,6 +35,16 @@ If the same JDL file is discovered through more than one source, it is included 
 
 ---
 
+## Path Resolution Flag
+
+| Flag | Default | Description |
+|---|---|---|
+| `--relative-to-source` | off | Resolve relative paths in a submit file against that submit file's own directory instead of HTFlow's current working directory. |
+
+By default (flag off), relative paths inside a submit file (`executable`, `transfer_input_files`, etc.) resolve against HTFlow's own cwd — `execute` spawns tasks without changing directories, and `convert` writes `JOB` lines with each submit file's absolute path and no DAGMan `DIR` clause. Passing `--relative-to-source` restores the opposite: each JDL's own directory becomes the base for its relative paths (a per-task `chdir` for `execute`, a DAGMan `DIR <directory>` clause for `convert`). It also governs where job-type-shape resolved submit files are written — see the `convert` section below. Full details: [`docs/config.md`](config.md).
+
+---
+
 ## Commands
 
 ### `htflow convert [FILE]`
@@ -53,6 +63,8 @@ htflow convert [FILE] --dir ./jobs/
 
 Prints the path of the written DAG file on success.
 
+If a job-type shape changes a node's transfer lists, `convert` writes a resolved submit file — by default under `flowman/produced/resolved/` (created only if needed), or beside the original JDL under `--relative-to-source`. This is the one case where `convert` touches `flowman/` even though it never acquires the engine lock or writes state.
+
 ---
 
 ### `htflow execute ENGINE`
@@ -68,6 +80,8 @@ htflow execute manual --dir ./jobs/
 |---|---|
 | `ENGINE` | Engine to use — currently only `manual` |
 | `--interval SECONDS` | Polling interval in seconds (default: `1.0`) |
+
+By default, each task runs with HTFlow's own current working directory; pass `--relative-to-source` to run each task from its own JDL's directory instead (see [Path Resolution Flag](#path-resolution-flag) above).
 
 The engine acquires an exclusive lock on `flowman/flowman.lock` before starting. If another engine is already running (lock held), the command exits immediately with code **75**.
 
@@ -115,7 +129,7 @@ htflow show types --dir ./jobs/ --job-shapes shapes.json
 
 ### `htflow cleanup`
 
-Remove the engine working directory (`flowman/`).
+Remove the engine working directory (`flowman/`), including any `produced/resolved/` files written by `execute` or `convert`.
 
 ```
 htflow cleanup
