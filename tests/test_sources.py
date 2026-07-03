@@ -16,9 +16,10 @@ import argparse
 import logging
 import pytest
 from pathlib import Path
+from unittest.mock import patch
 
 from htflow.sources import InputError, collect_jdl_files
-from htflow.sources._registry import FILE_HANDLERS
+from htflow.sources._registry import FILE_HANDLERS, handler_for, register
 from htflow.sources import from_jdl, from_dir
 
 
@@ -38,12 +39,28 @@ def make_sub(path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 class TestRegistry:
-    def test_sub_registered(self):
-        assert ".sub" in FILE_HANDLERS
-
-    def test_sub_handler_returns_path(self, tmp_path):
+    def test_default_handler_used_for_sub(self, tmp_path):
         p = make_sub(tmp_path / "a.sub")
-        assert FILE_HANDLERS[".sub"](p) == [p]
+        assert handler_for(".sub")(p) == [p]
+
+    def test_default_handler_used_for_arbitrary_extension(self, tmp_path):
+        p = make_sub(tmp_path / "a.txt")
+        assert handler_for(".txt")(p) == [p]
+
+    def test_default_handler_used_for_no_extension(self, tmp_path):
+        p = make_sub(tmp_path / "a")
+        assert handler_for("")(p) == [p]
+
+    def test_unregistered_extensions_share_the_default_handler(self):
+        assert handler_for(".sub") is handler_for(".doesnotexist")
+
+    def test_register_overrides_default_for_specific_extension(self, tmp_path):
+        marker = object()
+        register(".fake", lambda path: [marker])
+        try:
+            assert handler_for(".fake")(tmp_path / "x.fake") == [marker]
+        finally:
+            del FILE_HANDLERS[".fake"]
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +85,40 @@ class TestFromJdl:
         result = from_jdl.resolve(make_args(jdl=[str(a), str(b)]))
         assert result == [a, b]
 
+    def test_resolve_does_not_validate_content(self, tmp_path):
+        """--jdl names files explicitly; resolve() does not parse/validate them
+        (unlike the directory-scan default handler), preserving the existing
+        exit-125-on-missing-file behavior handled later by HTCondorDataFlow."""
+        bad = tmp_path / "bad.sub"
+        bad.write_text("not a submit file")
+        result = from_jdl.resolve(make_args(jdl=[str(bad)]))
+        assert result == [bad]
+
+
+# ---------------------------------------------------------------------------
+# from_jdl.handle_file (the default directory-scan handler)
+# ---------------------------------------------------------------------------
+
+class TestFromJdlHandleFile:
+    def test_valid_submit_file_returns_path(self, tmp_path):
+        p = make_sub(tmp_path / "a.sub")
+        assert from_jdl.handle_file(p) == [p]
+
+    def test_invalid_submit_file_returns_empty_list(self, tmp_path):
+        p = tmp_path / "a.sub"
+        p.write_text("garbage")
+        with patch("htflow.sources.from_jdl.htcondor2.Submit", side_effect=ValueError("boom")):
+            assert from_jdl.handle_file(p) == []
+
+    def test_invalid_submit_file_prints_skip_message(self, tmp_path, capsys):
+        p = tmp_path / "a.sub"
+        p.write_text("garbage")
+        with patch("htflow.sources.from_jdl.htcondor2.Submit", side_effect=ValueError("boom")):
+            from_jdl.handle_file(p)
+        out = capsys.readouterr().out
+        assert "Skipping" in out
+        assert str(p) in out
+
 
 # ---------------------------------------------------------------------------
 # from_dir
@@ -85,12 +136,42 @@ class TestFromDir:
         result = from_dir.resolve(make_args(dir=[str(tmp_path)]))
         assert p in result
 
-    def test_ignores_unsupported_extensions(self, tmp_path):
-        make_sub(tmp_path / "a.sub")
-        (tmp_path / "b.txt").write_text("ignored")
+    def test_extensionless_file_included_when_valid(self, tmp_path):
+        p = make_sub(tmp_path / "foo")
         result = from_dir.resolve(make_args(dir=[str(tmp_path)]))
-        assert len(result) == 1
-        assert (tmp_path / "b.txt") not in result
+        assert p in result
+
+    def test_arbitrary_extension_included_when_valid(self, tmp_path):
+        p = make_sub(tmp_path / "bat.txt")
+        result = from_dir.resolve(make_args(dir=[str(tmp_path)]))
+        assert p in result
+
+    def test_content_determines_inclusion_not_extension(self, tmp_path, capsys):
+        good = make_sub(tmp_path / "a.txt")
+        bad = tmp_path / "b.txt"
+        bad.write_text("garbage")
+        with patch("htflow.sources.from_jdl.htcondor2.Submit", side_effect=[None, ValueError("boom")]):
+            result = from_dir.resolve(make_args(dir=[str(tmp_path)]))
+        assert good in result
+        assert bad not in result
+        assert "Skipping" in capsys.readouterr().out
+
+    def test_registered_extension_overrides_default_handler(self, tmp_path):
+        handled = []
+
+        def fake_handler(path):
+            handled.append(path)
+            return [path]
+
+        register(".marker", fake_handler)
+        try:
+            marker = tmp_path / "sentinel.marker"
+            marker.write_text("not valid JDL content at all")
+            result = from_dir.resolve(make_args(dir=[str(tmp_path)]))
+            assert handled == [marker]
+            assert result == [marker]
+        finally:
+            del FILE_HANDLERS[".marker"]
 
     def test_top_level_only(self, tmp_path):
         sub = tmp_path / "nested"

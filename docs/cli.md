@@ -26,10 +26,12 @@ Most commands require at least one input source. At least one of the following f
 
 | Flag | Description |
 |---|---|
-| `--jdl PATH [PATH ...]` | One or more explicit HTCondor submit files |
-| `--dir DIR [DIR ...]` / `--directory` / `-d` | One or more directories to scan for supported submit files (top-level only) |
+| `--jdl PATH [PATH ...]` | One or more explicit HTCondor submit files. May be repeated (`--jdl a.sub --jdl b.sub`); values across all occurrences are combined. |
+| `--dir DIR [DIR ...]` / `--directory` / `-d` | One or more directories to scan for dataflow input sources (top-level only). May be repeated, same as `--jdl`. |
 
 If the same JDL file is discovered through more than one source, it is included once and a warning is logged.
+
+`--dir` treats every file in the scanned directory as a JDL submit file by default (regardless of extension, including files with no extension), except for extensions with a specific parser override registered — see [`htflow.sources`](sources.md). Files that fail to parse as an HTCondor submit description are skipped with a printed message rather than aborting the scan.
 
 ---
 

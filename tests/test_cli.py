@@ -220,6 +220,30 @@ class TestDirInput:
         dag = tmp_path / "out.dag"
         assert run_cli("convert", str(dag), "--jdl", str(a), "--dir", str(d)) == 0
 
+    def test_jdl_flag_repeated(self, make_sub, tmp_path):
+        a = make_sub("a", outputs=["link.txt"])
+        b = make_sub("b", inputs=["link.txt"])
+        dag = tmp_path / "out.dag"
+        code = run_cli("convert", str(dag), "--jdl", str(a), "--jdl", str(b))
+        assert code == 0
+        assert "JOB NODE-0" in dag.read_text()
+        assert "JOB NODE-1" in dag.read_text()
+
+    def test_dir_flag_repeated(self, make_sub, tmp_path):
+        d1 = tmp_path / "d1"
+        d2 = tmp_path / "d2"
+        d1.mkdir()
+        d2.mkdir()
+        a = make_sub("a")
+        a.rename(d1 / "a.sub")
+        b = make_sub("b")
+        b.rename(d2 / "b.sub")
+        dag = tmp_path / "out.dag"
+        code = run_cli("convert", str(dag), "--dir", str(d1), "--dir", str(d2))
+        assert code == 0
+        assert "JOB NODE-0" in dag.read_text()
+        assert "JOB NODE-1" in dag.read_text()
+
 
 class TestErrorHandling:
     def test_missing_jdl_file_exits_125(self, tmp_path):

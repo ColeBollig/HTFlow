@@ -278,18 +278,20 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
     common_parser.add_argument(
         "--jdl",
         nargs="+",
+        action="append",
         required=False,
         default=None,
         metavar="PATH",
-        help="One or more HTCondor submit files to process",
+        help="One or more HTCondor submit files to process (may be repeated)",
     )
     common_parser.add_argument(
         "--dir", "--directory", "-d",
         dest="dir",
         nargs="+",
+        action="append",
         default=None,
         metavar="DIR",
-        help="Directory to scan for supported HTCondor submit files",
+        help="Directory to scan for supported dataflow input sources (may be repeated)",
     )
     common_parser.add_argument(
         "--job-shapes",
@@ -392,6 +394,15 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
     # Process and validate arguments
 
     args = parser.parse_args()
+
+    # --jdl/--dir use action="append" so they can be repeated; flatten the
+    # resulting list-of-lists back into a flat list of strings.
+    flatten = lambda groups: [item for group in groups for item in group]
+
+    if hasattr(args, "jdl") and args.jdl is not None:
+        args.jdl = flatten(args.jdl)
+    if hasattr(args, "dir") and args.dir is not None:
+        args.dir = flatten(args.dir)
 
     class UnknownCommandError(Exception):
         def __init__(self, msg: str = None) -> None:

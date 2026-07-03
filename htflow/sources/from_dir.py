@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List
 
 from ._errors import InputError
-from ._registry import FILE_HANDLERS
+from ._registry import handler_for
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,15 @@ def resolve(args: argparse.Namespace) -> List[Path]:
 
         found = []
         for entry in sorted(dir_path.iterdir()):
-            if entry.is_file() and entry.suffix in FILE_HANDLERS:
-                found.extend(FILE_HANDLERS[entry.suffix](entry))
+            if not entry.is_file():
+                continue
+
+            handler = handler_for(entry.suffix)
+            if handler is None:
+                logger.warning("No handler available for file: %s", entry)
+                continue
+
+            found.extend(handler(entry))
 
         if not found:
             logger.warning("No supported files found in directory: %s", dir_path)
