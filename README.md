@@ -75,6 +75,7 @@ The same flag also governs where job-type-shape resolved submit files land — s
 | Document | Contents |
 |---|---|
 | [`docs/cli.md`](docs/cli.md) | All commands, flags, and exit codes |
+| [`docs/commands.md`](docs/commands.md) | CLI command dispatch architecture and how to add a new command |
 | [`docs/dataflow.md`](docs/dataflow.md) | `HTCondorDataFlow` API and enforced assumptions |
 | [`docs/engines.md`](docs/engines.md) | Engine lifecycle, locking, recovery, and `ManualEngine` |
 | [`docs/sources.md`](docs/sources.md) | Input file collection architecture and extension guide |
