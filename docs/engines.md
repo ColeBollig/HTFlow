@@ -39,7 +39,7 @@ Every engine accepts a shared `ExecutionConfig` (see [`htflow.config`](config.md
 
 ### Locking
 
-`Engine.__init__()` creates the working directory and calls `AcquireLock()` before any subclass initialisation runs.
+`Engine.__init__()` creates the working directory and stores `self.config`, but does **not** itself acquire the lock. Each concrete engine is responsible for calling `AcquireLock()` explicitly — `ManualEngine.__init__()`, for example, calls `super().__init__(config)` and then `self.AcquireLock()` before its own state setup runs.
 
 `AcquireLock()` uses a **non-blocking** exclusive file lock (`LOCK_EX | LOCK_NB`). If the lock is already held by another process, it raises `EngineExecutionError` immediately rather than blocking. This means attempting to run two engines against the same working directory is an immediate, clean failure rather than a silent wait.
 
@@ -82,7 +82,7 @@ while (code := engine.Terminate()) is None:
 ManualEngine(dag: dag.Dag, config: Optional[ExecutionConfig] = None)
 ```
 
-The `dag` argument must be a `Dag` produced by `HTCondorDataFlow.generate()`, with each node's `internal` field set to the path of its JDL file. The constructor acquires the working-directory lock, then wraps every node in a `ManualNode` (passing along `config`) and attaches a `ManualDag` tracker to `dag.internal`. If any post-lock initialisation raises, the lock is released before the exception propagates.
+The `dag` argument must be a `Dag` produced by `HTCondorDataFlow.generate()`, with each node's `internal` field set to the path of its JDL file. The constructor acquires the working-directory lock, then attaches a `ManualDag` tracker to `dag.internal` and wraps every node in a `ManualNode` (passing along `config`). If any post-lock initialisation raises, the lock is released before the exception propagates.
 
 **Raises** `EngineExecutionError` if the lock cannot be acquired (another engine is running).
 
@@ -134,7 +134,7 @@ Returns `None` while any nodes are still `READY` or `ACTIVE`. Once all nodes hav
 
 #### `Cleanup()`
 
-Kills and waits on any still-running subprocesses, then releases the lock. Called only from signal handlers (`SIGINT`/`SIGTERM`) on interruption — not during normal termination.
+Kills and waits on any still-running subprocesses, then releases the lock — but only if at least one node was `ACTIVE` when `Cleanup()` was invoked; if no nodes are active, it returns immediately without releasing the lock. Called only from signal handlers (`SIGINT`/`SIGTERM`) on interruption — not during normal termination.
 
 ### Usage
 
@@ -191,7 +191,7 @@ State transitions are validated — setting an illegal transition raises `Runtim
 | `IsTerminal()`                  | `True` when in `SUCCESS`, `FAILURE`, or `ORPHAN`                                        |
 | `Notify(parent_id)` → `bool`   | Called when a parent succeeds; returns `True` when all parents have reported in          |
 | `Execute()`                     | Reads the JDL file, builds the command, and spawns the subprocess                       |
-| `Done(dag)`                     | Transitions to `SUCCESS`, writes to state file, and notifies children                   |
+| `Done(dag)`                     | Transitions to `SUCCESS` and notifies children — does not itself write the state file; the caller (`ManualEngine.Update()`) appends the completion line after invoking `Done()` |
 | `Fail(dag)`                     | Transitions to `FAILURE` and orphans all children                                       |
 | `Orphaned(dag)`                 | Recursively marks this node and all descendants as `ORPHAN`                             |
 

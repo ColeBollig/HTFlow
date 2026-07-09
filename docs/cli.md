@@ -45,6 +45,16 @@ By default (flag off), relative paths inside a submit file (`executable`, `trans
 
 ---
 
+## Job Type Shapes Flag
+
+| Flag | Default | Description |
+|---|---|---|
+| `--job-shapes PATH` | none | JSON file containing job type shape definitions (see [`docs/dataflow.md`](dataflow.md#job-type-shapes)). |
+
+This is a shared flag accepted by `convert`, `execute`, and `show` (both the `files` and `types` views) — every command that builds a dataflow. It is not accepted by `cleanup`, which never builds a dataflow.
+
+---
+
 ## Commands
 
 ### `htflow convert [FILE]`
@@ -59,7 +69,8 @@ htflow convert [FILE] --dir ./jobs/
 | Argument | Description |
 |---|---|
 | `FILE` | Output DAG filename (default: `dataflow.dag`) |
-| `--job-shapes PATH` | JSON file containing job type shape definitions |
+
+Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) flag.
 
 Prints the path of the written DAG file on success.
 
@@ -80,6 +91,8 @@ htflow execute manual --dir ./jobs/
 |---|---|
 | `ENGINE` | Engine to use — currently only `manual` |
 | `--interval SECONDS` | Polling interval in seconds (default: `1.0`) |
+
+Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) flag.
 
 By default, each task runs with HTFlow's own current working directory; pass `--relative-to-source` to run each task from its own JDL's directory instead (see [Path Resolution Flag](#path-resolution-flag) above).
 
@@ -108,7 +121,9 @@ Output columns:
 | `Consumers` | Number of nodes that consume this file as input |
 | `File` | File path or URL |
 
-Files are grouped by protocol header (e.g. `CEDAR FILES IN DATAFLOW`, `OSDF FILES IN DATAFLOW`). Local files are grouped under `CEDAR`.
+Files are grouped by protocol header (e.g. `CEDAR files in dataflow`, `OSDF files in dataflow` — only the protocol name is uppercased). Local files are grouped under `CEDAR`.
+
+Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) flag.
 
 ---
 
@@ -121,9 +136,7 @@ htflow show types --jdl a.sub b.sub
 htflow show types --dir ./jobs/ --job-shapes shapes.json
 ```
 
-| Argument | Description |
-|---|---|
-| `--job-shapes PATH` | JSON file of job type shapes to load alongside (optional) |
+Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) flag.
 
 ---
 
@@ -146,7 +159,7 @@ If another engine is currently running (lock held), cleanup refuses and exits wi
 | Code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | One or more workflow tasks failed during `execute` |
-| `2` | Invalid command-line arguments or no JDL files found |
+| `1` | One or more workflow tasks failed during `execute`, or `execute` was interrupted via `SIGINT`/`SIGTERM` |
+| `2` | Invalid command-line arguments (bad flag values, unknown flags) or no JDL files found |
 | `75` | Engine already running — lock is held by another process |
-| `125` | Setup or configuration failure (bad file, assumption violation, etc.) |
+| `125` | Setup or configuration failure — bad file, assumption violation, or `htflow` invoked with no subcommand at all |

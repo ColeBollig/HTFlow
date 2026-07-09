@@ -44,7 +44,7 @@ The main entry point. Given a parsed `argparse.Namespace`, it:
 5. Raises `InputError` if the final list is empty
 6. Returns the deduplicated `List[Path]`
 
-This function is called inside `parse_args()` immediately after `argparse` finishes, and its result is written back to `args.jdl` so the rest of the application is unaware of which source(s) provided the files.
+This function is called inside `parse_args()`, after `argparse` finishes and the `--jdl`/`--dir` values have been flattened and command validity checked, and its result is written back to `args.jdl` so the rest of the application is unaware of which source(s) provided the files.
 
 ---
 
