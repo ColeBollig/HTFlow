@@ -113,9 +113,9 @@ Transitions all root nodes (nodes with no parents, and not already marked `SUCCE
 
 #### `Execute()`
 
-Launches a subprocess for every node currently in the `READY` state. Each task's `executable`/`arguments` are read from its JDL and spawned via `subprocess.Popen`. Directory behavior depends on `config.relative_to_source`:
+Launches a subprocess for every node currently in the `READY` state. Each task's `executable`/`arguments` are read from its JDL and spawned via `subprocess.Popen`. Directory behavior depends only on `config.relative_to_source` — `config.resolve_from` never changes a task's working directory:
 
-- **`relative_to_source=False` (default)** — no directory change occurs; the task inherits HTFlow's own current working directory, so relative paths in the submit file resolve against wherever HTFlow was invoked from, not against the JDL's own directory.
+- **`relative_to_source=False` (default, including when `resolve_from` is set)** — no directory change occurs; the task inherits HTFlow's own current working directory, so relative paths in the submit file resolve against wherever HTFlow was invoked from, not against the JDL's own directory. If `resolve_from` was set, any relative `transfer_input_files`/`transfer_output_files` entries were already rewritten to absolute paths during `__resolve()` (see [`docs/dataflow.md`](dataflow.md#job-type-shapes) / [`docs/config.md`](config.md)), so this JDL is whatever `HTCondorDataFlow.generate()` produced — the original file, or a `.resolved` copy.
 - **`relative_to_source=True`** — the task is run with the JDL's own parent directory as its working directory (via `ChangeDir`), matching the JDL-colocated behavior.
 
 If a node's process fails to start, it is immediately transitioned to `FAILURE` and its children are `ORPHAN`ed.

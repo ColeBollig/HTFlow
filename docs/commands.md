@@ -29,7 +29,7 @@ def run(df, args) -> None                                           # executes t
 
 `add_parser` receives its own registered `name` as a parameter (derived from the directory it lives in) rather than declaring a `NAME` constant itself — the directory *is* the source of truth. Discovery validates that both `add_parser` and `run` exist and are callable, raising `RuntimeError` immediately at import time if a command package is missing either (a malformed command fails loud, not silently at dispatch time). Names starting with `_` are skipped, so private helper modules (like `_discovery.py` itself) can live in `htflow/commands/` without being mistaken for a command.
 
-The result is `COMMANDS`, a `{name: module}` dict, and `CMD_TO_FUNCTION`, a `{name: module.run}` dict derived from it. `__main__.py`'s `parse_args()` builds the shared `common_parser` (`--jdl`, `--dir`, `--job-shapes`, `--relative-to-source` — cross-command flags not owned by any single command) and then does:
+The result is `COMMANDS`, a `{name: module}` dict, and `CMD_TO_FUNCTION`, a `{name: module.run}` dict derived from it. `__main__.py`'s `parse_args()` builds the shared `common_parser` (`--jdl`, `--dir`, `--job-shapes`, `--relative-to-source`, `--resolve-from` — cross-command flags not owned by any single command) and then does:
 
 ```python
 subparsers = parser.add_subparsers(dest="command")

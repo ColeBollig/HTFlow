@@ -351,3 +351,32 @@ class TestExecuteRelativeToSource:
         assert run_execute("--relative-to-source", "--jdl", str(jdl), log_file=htflow_log) == 0
         assert (subdir / "exec.log").exists()
         assert not (tmp_path / "exec.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# --resolve-from: never changes the task's execution directory
+# ---------------------------------------------------------------------------
+
+class TestExecuteResolveFrom:
+    def _make_jdl_in_subdir(self, subdir, task_script):
+        subdir.mkdir()
+        jdl = subdir / "a.sub"
+        jdl.write_text(
+            f"executable = python3\n"
+            f"arguments = {task_script} --id 1 --log exec.log --exit-code 0\n"
+            "queue\n"
+        )
+        return jdl
+
+    def test_flag_still_runs_from_htflow_cwd(self, tmp_path, task_script, htflow_log):
+        """--resolve-from only rewrites transfer file entries; it must never chdir,
+        so the task still inherits HTFlow's own cwd exactly like the default case."""
+        subdir = tmp_path / "sub"
+        jdl = self._make_jdl_in_subdir(subdir, task_script)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        assert run_execute("--resolve-from", str(target), "--jdl", str(jdl), log_file=htflow_log) == 0
+        assert (tmp_path / "exec.log").exists()
+        assert not (subdir / "exec.log").exists()
+        assert not (target / "exec.log").exists()

@@ -274,6 +274,52 @@ class TestErrorHandling:
 
 
 # ---------------------------------------------------------------------------
+# --resolve-from
+# ---------------------------------------------------------------------------
+
+class TestResolveFrom:
+    def test_relative_path_exits_2(self, make_sub, tmp_path):
+        a = make_sub("a")
+        dag = tmp_path / "out.dag"
+        code = run_cli("convert", str(dag), "--jdl", str(a), "--resolve-from", "relative/path")
+        assert code == 2
+
+    def test_nonexistent_dir_exits_2(self, make_sub, tmp_path):
+        a = make_sub("a")
+        dag = tmp_path / "out.dag"
+        code = run_cli("convert", str(dag), "--jdl", str(a), "--resolve-from", str(tmp_path / "nope"))
+        assert code == 2
+
+    def test_mutually_exclusive_with_relative_to_source_exits_2(self, make_sub, tmp_path):
+        a = make_sub("a")
+        dag = tmp_path / "out.dag"
+        code = run_cli(
+            "convert", str(dag), "--jdl", str(a),
+            "--relative-to-source", "--resolve-from", str(tmp_path),
+        )
+        assert code == 2
+
+    def test_valid_absolute_dir_succeeds(self, make_sub, tmp_path):
+        a = make_sub("a")
+        dag = tmp_path / "out.dag"
+        target = tmp_path / "target"
+        target.mkdir()
+        assert run_cli("convert", str(dag), "--jdl", str(a), "--resolve-from", str(target)) == 0
+        assert "DIR" not in dag.read_text()
+
+    def test_valid_dir_rewrites_relative_transfer_file_absolute(self, make_sub, tmp_path):
+        a = make_sub("a", inputs=["data.txt"])
+        dag = tmp_path / "out.dag"
+        target = tmp_path / "target"
+        target.mkdir()
+        assert run_cli("convert", str(dag), "--jdl", str(a), "--resolve-from", str(target), cwd=tmp_path) == 0
+
+        resolved = tmp_path / "flowman" / "produced" / "resolved" / "a.sub.resolved"
+        assert resolved.exists()
+        assert f"transfer_input_files = {target / 'data.txt'}" in resolved.read_text()
+
+
+# ---------------------------------------------------------------------------
 # cleanup
 # ---------------------------------------------------------------------------
 

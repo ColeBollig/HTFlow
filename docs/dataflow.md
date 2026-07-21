@@ -8,7 +8,7 @@ The module works by reading `transfer_input_files` and `transfer_output_files` f
 
 ## Assumptions
 
-The dataflow analysis enforces six assumptions about the submit files it processes. Violating any of them raises an `AssumptionError`.
+The dataflow analysis enforces seven assumptions about the submit files it processes. Violating any of them raises an `AssumptionError`.
 
 | # | `Assumption` member  | Constraint                                                                                        |
 |---|----------------------|---------------------------------------------------------------------------------------------------|
@@ -18,8 +18,11 @@ The dataflow analysis enforces six assumptions about the submit files it process
 | 4 | `NO_DIRECTORIES`     | `output_directory` is not set                                                                     |
 | 5 | `NO_URL`             | Only `osdf://` and `pelican://` URL-scheme files are permitted; all other protocols and `output_destination` are rejected |
 | 6 | `NO_REMAPS`          | `transfer_output_remaps` is not set                                                               |
+| 7 | `NO_PARENT_TRAVERSAL` | No `transfer_input_files`/`transfer_output_files` entry's first path component is `..` — only enforced when neither `--relative-to-source` nor `--resolve-from` is active |
 
 > **Allowed protocols:** `osdf` and `pelican` URL-scheme files pass assumption 5 and are tracked in the dataflow mapping like any other file. Their keys in `mapping` are stored as plain strings (not `Path` objects) so that the original URL — including any triple-slash prefix such as `osdf:///federation/file.txt` — is preserved exactly as written in the submit file.
+
+> **Assumption 7 scope:** only a *leading* `..` component is rejected (`../file.txt`, `../../file.txt`), not `..` appearing later in a path (`sub/../file.txt` is allowed) or a filename that merely starts with two dots (`..hidden.txt` is allowed). The check is skipped entirely when `--relative-to-source` or `--resolve-from` is set, since both flags mean the user has taken explicit control of path anchoring and may legitimately need to reach outside a JDL's own directory.
 
 ---
 
@@ -98,9 +101,9 @@ Runs the same internal parsing/graph-building logic as `generate()` and writes a
 
 The generated file contains a `JOB` entry for every node followed by `PARENT … CHILD …` lines for every dependency edge. Children that share an identical set of parents are collapsed onto a single `PARENT … CHILD …` line.
 
-The `JOB` line's form depends on `config.relative_to_source`:
+The `JOB` line's form depends only on `config.relative_to_source` — `config.resolve_from` never affects it:
 
-- **`relative_to_source=False` (default)** — each `JOB` line references its submit file by absolute path, so JDL files may live anywhere on disk. No `DIR` clause is emitted, so relative paths inside a submit file (e.g. `executable`, `transfer_input_files`) resolve against wherever `condor_submit_dag` is invoked from, not against the JDL's own directory.
+- **`relative_to_source=False` (default, including when `resolve_from` is set)** — each `JOB` line references its submit file by absolute path, so JDL files may live anywhere on disk. No `DIR` clause is emitted, so relative paths inside a submit file (e.g. `executable`, `transfer_input_files`) resolve against wherever `condor_submit_dag` is invoked from, not against the JDL's own directory. If `resolve_from` was set, any relative `transfer_input_files`/`transfer_output_files` entries were already rewritten to absolute paths during `__resolve()` — see [Job Type Shapes](#job-type-shapes) below — so this concern doesn't apply to those entries regardless.
 - **`relative_to_source=True`** — each `JOB` line references its submit file by bare filename. When the JDL's parent directory differs from the current working directory, a `DIR <directory>` clause is appended so DAGMan submits (and resolves relative paths for) that job from the JDL's own directory.
 
 ```python
@@ -195,9 +198,10 @@ Both `InputFiles` and `OutputFiles` are optional within a type entry. Any files 
 
 1. If a JDL file contains `JobType = <name>`, `<name>` must appear as a key in `job_shapes` — otherwise `AssumptionError(COMPLETE_LIST)` is raised.
 2. Files from the matching shape entry are merged into the node's transfer lists.
-3. The same URL and macro assumptions (NO_URL, NO_MACROS) apply to shape file lists.
-4. When a shape changes a node's transfer lists, the resolved submit description is written to a new `<original-jdl-filename>.resolved` file (e.g. `fetch.sub` → `fetch.sub.resolved`), and the DAG node's internal path is updated to point at it. Where that file lands depends on `config.relative_to_source`:
-   - **`relative_to_source=False` (default)** — all resolved files are centralized under `Engine.work_dir() / "produced" / "resolved"` (i.e. `flowman/produced/resolved/`), regardless of where their source JDLs came from. If two or more JDLs needing resolution share the same filename but came from different source directories, each distinct source directory is assigned its own numbered subdirectory (`1/`, `2/`, …, in order of first appearance) so their resolved outputs don't collide; JDLs whose filename doesn't collide with anything are written flat at the top of `resolved/`. Directories are only created as needed — nothing is written if no shape changes any transfer list.
+3. The same URL, macro, and parent-traversal assumptions (NO_URL, NO_MACROS, NO_PARENT_TRAVERSAL) apply to shape file lists.
+4. If `config.resolve_from` is set, every entry in the node's (possibly shape-merged) `transfer_input_files`/`transfer_output_files` is then rewritten in place: a URL entry or an already-absolute entry is left untouched, while a relative entry `foo/bar.txt` becomes `str(resolve_from / "foo/bar.txt")`. This runs independently of job type shapes — it applies even to a node with no `JobType` at all.
+5. When either step above actually changes a node's transfer lists, the resolved submit description is written to a new `<original-jdl-filename>.resolved` file (e.g. `fetch.sub` → `fetch.sub.resolved`), and the DAG node's internal path is updated to point at it. If neither step changed anything, no `.resolved` file is written and the node keeps its original JDL path. Where the file lands depends on `config.relative_to_source` only — `config.resolve_from` has no effect here:
+   - **`relative_to_source=False` (default, including when `resolve_from` is set)** — all resolved files are centralized under `Engine.work_dir() / "produced" / "resolved"` (i.e. `flowman/produced/resolved/`), regardless of where their source JDLs came from. If two or more JDLs needing resolution share the same filename but came from different source directories, each distinct source directory is assigned its own numbered subdirectory (`1/`, `2/`, …, in order of first appearance) so their resolved outputs don't collide; JDLs whose filename doesn't collide with anything are written flat at the top of `resolved/`. Directories are only created as needed — nothing is written if no shape changes any transfer list.
    - **`relative_to_source=True`** — the resolved file is written directly alongside the original JDL, as in earlier versions.
 
 ### Example

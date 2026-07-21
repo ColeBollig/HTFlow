@@ -17,6 +17,7 @@ import logging
 import argparse
 import traceback
 import json
+from pathlib import Path
 from typing import Tuple, Callable
 
 from htflow.dataflow import HTCondorDataFlow, AssumptionError
@@ -104,7 +105,8 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
         metavar="PATH",
         help="Path to JSON file containing special job type shapes",
     )
-    common_parser.add_argument(
+    path_resolution = common_parser.add_mutually_exclusive_group()
+    path_resolution.add_argument(
         "--relative-to-source",
         dest="relative_to_source",
         action="store_true",
@@ -115,6 +117,22 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
             "For 'execute', the task is run from its JDL's directory. For "
             "'convert', a DAGMan DIR clause is added pointing at the JDL's "
             "directory."
+        ),
+    )
+    path_resolution.add_argument(
+        "--resolve-from",
+        dest="resolve_from",
+        action="store",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Resolve relative paths in each submit file against this fixed "
+            "absolute directory instead of the current working directory. "
+            "For 'execute', the task is run from this directory. For "
+            "'convert', a DAGMan DIR clause is added pointing at this "
+            "directory. PATH must be an absolute path to an existing "
+            "directory. Mutually exclusive with --relative-to-source."
         ),
     )
 
@@ -142,6 +160,14 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
     if hasattr(args, "dir") and args.dir is not None:
         args.dir = flatten(args.dir)
 
+    if getattr(args, "resolve_from", None) is not None:
+        resolve_from = Path(args.resolve_from)
+        if not resolve_from.is_absolute():
+            parser.error(f"--resolve-from must be an absolute path: {args.resolve_from}")
+        if not resolve_from.is_dir():
+            parser.error(f"--resolve-from is not a directory: {args.resolve_from}")
+        args.resolve_from = resolve_from
+
     if args.command not in commands.CMD_TO_FUNCTION:
         parser.print_help()
         sys.exit(EXIT_SETUP_FAILURE)
@@ -168,7 +194,7 @@ def main() -> None:
             action(args)
             return
 
-        config = ExecutionConfig(relative_to_source=args.relative_to_source)
+        config = ExecutionConfig(relative_to_source=args.relative_to_source, resolve_from=args.resolve_from)
         df = HTCondorDataFlow(files=args.jdl, config=config)
         if args.job_shapes:
             with open(args.job_shapes, "r") as f:

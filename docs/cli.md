@@ -35,13 +35,22 @@ If the same JDL file is discovered through more than one source, it is included 
 
 ---
 
-## Path Resolution Flag
+## Path Resolution Flags
+
+`--relative-to-source` and `--resolve-from` are mutually exclusive — passing both exits with code **2**. They take fundamentally different approaches: `--relative-to-source` changes *where a job runs from*; `--resolve-from` rewrites *the submit file's own content* and never changes any working directory.
 
 | Flag | Default | Description |
 |---|---|---|
 | `--relative-to-source` | off | Resolve relative paths in a submit file against that submit file's own directory instead of HTFlow's current working directory. |
+| `--resolve-from PATH` | none | Rewrite relative `transfer_input_files`/`transfer_output_files` entries in a submit file to absolute paths anchored at `PATH`. `PATH` must be an absolute path to an existing directory, or the command exits with code **2**. |
 
-By default (flag off), relative paths inside a submit file (`executable`, `transfer_input_files`, etc.) resolve against HTFlow's own cwd — `execute` spawns tasks without changing directories, and `convert` writes `JOB` lines with each submit file's absolute path and no DAGMan `DIR` clause. Passing `--relative-to-source` restores the opposite: each JDL's own directory becomes the base for its relative paths (a per-task `chdir` for `execute`, a DAGMan `DIR <directory>` clause for `convert`). It also governs where job-type-shape resolved submit files are written — see the `convert` section below. Full details: [`docs/config.md`](config.md).
+By default (neither flag set), relative paths inside a submit file (`executable`, `transfer_input_files`, etc.) resolve against HTFlow's own cwd — `execute` spawns tasks without changing directories, and `convert` writes `JOB` lines with each submit file's absolute path and no DAGMan `DIR` clause.
+
+Passing `--relative-to-source` restores the opposite: each JDL's own directory becomes the base for its relative paths (a per-task `chdir` for `execute`, a DAGMan `DIR <directory>` clause for `convert`). It also governs where job-type-shape resolved submit files are written — see the `convert` section below.
+
+Passing `--resolve-from PATH` instead rewrites each node's `transfer_input_files`/`transfer_output_files` entries in place: relative, non-URL entries become absolute paths under `PATH`; URLs and already-absolute entries are left untouched. This produces a `.resolved` submit file exactly like job-type-shape resolution does (only when something actually changed), reusing the same centralized placement under `flowman/produced/resolved/` — `--resolve-from` does not change that placement. It never touches `executable` or `arguments`, never changes any process's working directory, and has no effect on `--jdl`/`--dir`/`--job-shapes` input discovery. Once the rewrite is done, `execute` and `convert` behave exactly as in the default case (no chdir, no `DIR` clause).
+
+Full details: [`docs/config.md`](config.md).
 
 ---
 
@@ -74,7 +83,7 @@ Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) flag.
 
 Prints the path of the written DAG file on success.
 
-If a job-type shape changes a node's transfer lists, `convert` writes a resolved submit file — by default under `flowman/produced/resolved/` (created only if needed), or beside the original JDL under `--relative-to-source`. This is the one case where `convert` touches `flowman/` even though it never acquires the engine lock or writes state.
+If a job-type shape or `--resolve-from` changes a node's transfer lists, `convert` writes a resolved submit file — by default under `flowman/produced/resolved/` (created only if needed), or beside the original JDL under `--relative-to-source`. This is the one case where `convert` touches `flowman/` even though it never acquires the engine lock or writes state.
 
 ---
 
@@ -94,7 +103,7 @@ htflow execute manual --dir ./jobs/
 
 Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) flag.
 
-By default, each task runs with HTFlow's own current working directory; pass `--relative-to-source` to run each task from its own JDL's directory instead (see [Path Resolution Flag](#path-resolution-flag) above).
+By default, each task runs with HTFlow's own current working directory; pass `--relative-to-source` to run each task from its own JDL's directory instead. `--resolve-from PATH` never changes the task's working directory — it rewrites relative `transfer_input_files`/`transfer_output_files` entries to absolute paths under `PATH` ahead of time instead (see [Path Resolution Flags](#path-resolution-flags) above).
 
 The engine acquires an exclusive lock on `flowman/flowman.lock` before starting. If another engine is already running (lock held), the command exits immediately with code **75**.
 

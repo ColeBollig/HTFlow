@@ -19,6 +19,8 @@
 ##    4. No directories are specified in input/output file lists
 ##    5. All files transfered are locally transferred (i.e. CEDAR)
 ##    6. No file remapping
+##    7. No relative input/output file path begins with a parent directory reference (..),
+##       unless --relative-to-source or --resolve-from is active
 
 from __future__ import annotations
 
@@ -46,6 +48,7 @@ class Assumption(enum.Enum):
     NO_DIRECTORIES = 4
     NO_URL = 5
     NO_REMAPS = 6
+    NO_PARENT_TRAVERSAL = 7
 
 class AssumptionError(Exception):
     def __init__(self, msg: str, assumption: Assumption, src: Path) -> None:
@@ -210,7 +213,8 @@ class HTCondorDataFlow():
         self._dag = None
 
     def __write_resolved(self, pending: List[Tuple[dag.Node, htcondor2.Submit]]) -> None:
-        """Write resolved job-type-shape submit files for nodes whose transfer lists changed.
+        """Write resolved submit files for nodes whose transfer lists changed, whether from
+        a job type shape merge or from --resolve-from's absolute-path rewriting.
 
         Under relative_to_source, each file is written beside its original JDL, as before.
         Otherwise all resolved files are centralized under the engine working directory;
@@ -262,6 +266,11 @@ class HTCondorDataFlow():
             node = self._dag.AddNode(f"NODE-{i}")
             node.internal = jdl
 
+        # Parent-directory traversal is only disallowed when no path resolution flag is
+        # active; --relative-to-source/--resolve-from users have opted into their own
+        # explicit path-anchoring behavior and may legitimately need to reach upward.
+        enforce_no_parent_traversal = not self._config.relative_to_source and self._config.resolve_from is None
+
         def process_transfer_list(desc: htcondor2.Submit, key: str, jdl: Path, errkey: Optional[str] = None) -> list:
             if desc.get(key) is None:
                 return []
@@ -281,10 +290,22 @@ class HTCondorDataFlow():
                         raise AssumptionError(f"{errkey} contains URLs: {entry}", Assumption.NO_URL, jdl)
                 elif "$(" in entry:
                     raise AssumptionError(f"{errkey} contains macro substitutions: {entry}", Assumption.NO_MACROS, jdl)
+                elif enforce_no_parent_traversal and Path(entry).parts[:1] == ("..",):
+                    raise AssumptionError(f"{errkey} contains a parent directory reference: {entry}", Assumption.NO_PARENT_TRAVERSAL, jdl)
             return entries
 
         def _file_key(f: str) -> Union[Path, str]:
             return f if "://" in f else Path(f)
+
+        resolve_from = self._config.resolve_from
+
+        def absolutize(entry: str) -> str:
+            """Rewrite a relative, non-URL transfer-file-list entry to an absolute
+            path anchored at --resolve-from; leave URLs/already-absolute entries as-is."""
+            if "://" in entry:
+                return entry
+            p = Path(entry)
+            return str(p) if p.is_absolute() else str(resolve_from / p)
 
         # Process all JDL files and associated with a node
         for node in self._dag:
@@ -322,9 +343,23 @@ class HTCondorDataFlow():
                         outputs = process_transfer_list(SHAPE, HTCondorDataFlow.KEY_OUTPUT_FILES, node.internal, f"Job type '{job_type}' output file list")
                         outfiles = list(dict.fromkeys(outfiles + outputs))
                         desc["transfer_output_files"] = ",".join(outfiles)
+                else:
+                    had_change = False
 
-                    if had_change:
-                        pending_resolutions.append((node, desc))
+                # Rewrite relative transfer_input_files/transfer_output_files entries to
+                # absolute paths anchored at --resolve-from (independent of job type shapes).
+                if resolve_from is not None:
+                    resolved_infiles = [absolutize(f) for f in infiles]
+                    resolved_outfiles = [absolutize(f) for f in outfiles]
+
+                    if resolved_infiles != infiles or resolved_outfiles != outfiles:
+                        had_change = True
+                        infiles, outfiles = resolved_infiles, resolved_outfiles
+                        desc["transfer_input_files"] = ",".join(infiles)
+                        desc["transfer_output_files"] = ",".join(outfiles)
+
+                if had_change:
+                    pending_resolutions.append((node, desc))
 
             # Process output file list
             for f in outfiles:

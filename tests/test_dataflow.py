@@ -37,6 +37,10 @@ class TestInit:
         config = ExecutionConfig(relative_to_source=True)
         assert HTCondorDataFlow(config=config).config == config
 
+    def test_custom_resolve_from_stored(self, tmp_path):
+        config = ExecutionConfig(resolve_from=tmp_path)
+        assert HTCondorDataFlow(config=config).config == config
+
     def test_custom_job_shapes_stored(self):
         shapes = {"worker": {"InputFiles": "a.txt"}}
         assert HTCondorDataFlow(job_shapes=shapes).shapes == shapes
@@ -386,6 +390,50 @@ class TestAssumptions:
             HTCondorDataFlow(files=[f]).generate()
         assert exc.value.assumption == Assumption.NO_URL
 
+    def test_parent_traversal_in_input_files_raises(self, tmp_path):
+        f = tmp_path / "a.sub"
+        f.write_text("executable = x\ntransfer_input_files = ../secret.txt\nqueue\n")
+        with pytest.raises(AssumptionError) as exc:
+            HTCondorDataFlow(files=[f]).generate()
+        assert exc.value.assumption == Assumption.NO_PARENT_TRAVERSAL
+
+    def test_parent_traversal_in_output_files_raises(self, tmp_path):
+        f = tmp_path / "a.sub"
+        f.write_text("executable = x\ntransfer_output_files = ../../out.txt\nqueue\n")
+        with pytest.raises(AssumptionError) as exc:
+            HTCondorDataFlow(files=[f]).generate()
+        assert exc.value.assumption == Assumption.NO_PARENT_TRAVERSAL
+
+    def test_dotdot_not_at_start_is_allowed(self, tmp_path):
+        """Only a leading '..' path component is disallowed, not '..' appearing elsewhere."""
+        f = tmp_path / "a.sub"
+        f.write_text("executable = x\ntransfer_input_files = sub/../file.txt\nqueue\n")
+        HTCondorDataFlow(files=[f]).generate()
+
+    def test_dotted_filename_not_mistaken_for_traversal(self, tmp_path):
+        f = tmp_path / "a.sub"
+        f.write_text("executable = x\ntransfer_input_files = ..hidden.txt\nqueue\n")
+        HTCondorDataFlow(files=[f]).generate()
+
+    def test_parent_traversal_allowed_under_relative_to_source(self, tmp_path):
+        f = tmp_path / "a.sub"
+        f.write_text("executable = x\ntransfer_input_files = ../shared.txt\nqueue\n")
+        config = ExecutionConfig(relative_to_source=True)
+        with ChangeDir(tmp_path):
+            HTCondorDataFlow(files=[f], config=config).generate()
+
+    def test_parent_traversal_allowed_under_resolve_from(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        f = tmp_path / "a.sub"
+        f.write_text("executable = x\ntransfer_input_files = ../shared.txt\nqueue\n")
+        config = ExecutionConfig(resolve_from=target)
+        # resolve_from rewrites the entry to an absolute path, which triggers the
+        # resolved-file pipeline (Engine.work_dir()); isolate cwd so the resulting
+        # flowman/ lands in tmp_path instead of leaking into the real cwd.
+        with ChangeDir(tmp_path):
+            HTCondorDataFlow(files=[f], config=config).generate()
+
 
 # ---------------------------------------------------------------------------
 # Cycle detection
@@ -598,6 +646,19 @@ class TestWrite:
         content = dag_path.read_text()
         assert "DIR" not in content
         assert "JOB NODE-0 a.sub" in content
+
+    def test_resolve_from_no_dir_clause(self, make_sub, tmp_path):
+        """--resolve-from rewrites transfer file entries in-place; it never emits a
+        DAGMan DIR clause or changes how the JOB line itself is formed."""
+        a = make_sub("a")
+        dag_path = tmp_path / "out.dag"
+        resolve_from = tmp_path / "elsewhere"
+        resolve_from.mkdir()
+        config = ExecutionConfig(resolve_from=resolve_from)
+        HTCondorDataFlow(files=[a], filename=str(dag_path), config=config).write()
+        content = dag_path.read_text()
+        assert "DIR" not in content
+        assert f"JOB NODE-0 {a.resolve()}" in content
 
     def test_shared_children_grouped_by_parent_set(self, make_sub, tmp_path):
         p1  = make_sub("p1",  outputs=["x.txt"])
@@ -844,3 +905,109 @@ class TestResolvedFileSiloing:
         assert d[0].internal == f_g.with_suffix(f_g.suffix + ".resolved")
         assert d[1].internal == h_g.with_suffix(h_g.suffix + ".resolved")
         assert not Engine.work_dir().exists()
+
+    def test_resolve_from_does_not_change_resolved_file_placement(self, tmp_path):
+        """resolve_from only rewrites transfer file entries to absolute paths; it
+        doesn't change where HTFlow centralizes its own resolved output files."""
+        f_g = self._write_sub(tmp_path / "f" / "g.sub", job_type="worker")
+        h_g = self._write_sub(tmp_path / "h" / "g.sub", job_type="worker")
+        shapes = {"worker": {"InputFiles": "shared_in.txt"}}
+        resolve_from = tmp_path / "elsewhere"
+        resolve_from.mkdir()
+        config = ExecutionConfig(resolve_from=resolve_from)
+        d = HTCondorDataFlow(files=[f_g, h_g], job_shapes=shapes, config=config).generate()
+
+        root = Engine.work_dir() / "produced" / "resolved"
+        assert d[0].internal == root / "1" / "g.sub.resolved"
+        assert d[1].internal == root / "2" / "g.sub.resolved"
+
+
+# ---------------------------------------------------------------------------
+# --resolve-from: absolute-path rewriting of transfer file lists
+# ---------------------------------------------------------------------------
+
+class TestResolveFrom:
+    """resolve_from never changes directories or emits DAGMan DIR clauses (see
+    TestWrite.test_resolve_from_no_dir_clause). It only rewrites relative,
+    non-URL transfer_input_files/transfer_output_files entries to absolute
+    paths anchored at the given directory, reusing the resolved-file pipeline
+    that job type shapes already use."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cwd(self, tmp_path):
+        with ChangeDir(tmp_path):
+            yield
+
+    def test_relative_input_file_rewritten_absolute(self, make_sub, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        a = make_sub("a", inputs=["data.txt"])
+        config = ExecutionConfig(resolve_from=target)
+        d = HTCondorDataFlow(files=[a], config=config).generate()
+
+        assert d[0].internal != a
+        content = d[0].internal.read_text()
+        assert f"transfer_input_files = {target / 'data.txt'}" in content
+
+    def test_relative_output_file_rewritten_absolute(self, make_sub, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        a = make_sub("a", outputs=["out.txt"])
+        config = ExecutionConfig(resolve_from=target)
+        d = HTCondorDataFlow(files=[a], config=config).generate()
+
+        content = d[0].internal.read_text()
+        assert f"transfer_output_files = {target / 'out.txt'}" in content
+
+    def test_already_absolute_entry_left_unchanged(self, make_sub, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        abs_file = tmp_path / "abs_input.txt"
+        a = make_sub("a", inputs=[str(abs_file)])
+        config = ExecutionConfig(resolve_from=target)
+        d = HTCondorDataFlow(files=[a], config=config).generate()
+
+        # Nothing needed rewriting, so no .resolved file is produced at all.
+        assert d[0].internal == a
+        assert f"transfer_input_files = {abs_file}" in a.read_text()
+
+    def test_url_entry_untouched_alongside_a_rewritten_entry(self, make_sub, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        a = make_sub("a", inputs=["osdf:///namespace/file.txt", "data.txt"])
+        config = ExecutionConfig(resolve_from=target)
+        d = HTCondorDataFlow(files=[a], config=config).generate()
+
+        content = d[0].internal.read_text()
+        assert "osdf:///namespace/file.txt" in content
+        assert str(target / "data.txt") in content
+
+    def test_no_relative_entries_no_resolved_file_written(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        sub = tmp_path / "a.sub"
+        sub.write_text("executable = example.sh\nqueue\n")
+        config = ExecutionConfig(resolve_from=target)
+        d = HTCondorDataFlow(files=[sub], config=config).generate()
+
+        assert d[0].internal == sub
+        assert not Engine.work_dir().exists()
+
+    def test_resolved_file_centralized_under_flowman(self, make_sub, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        a = make_sub("a", inputs=["data.txt"])
+        config = ExecutionConfig(resolve_from=target)
+        d = HTCondorDataFlow(files=[a], config=config).generate()
+
+        root = Engine.work_dir() / "produced" / "resolved"
+        assert d[0].internal == root / "a.sub.resolved"
+
+    def test_no_chdir_occurs(self, make_sub, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        a = make_sub("a", inputs=["data.txt"])
+        config = ExecutionConfig(resolve_from=target)
+        before = Path.cwd()
+        HTCondorDataFlow(files=[a], config=config).generate()
+        assert Path.cwd() == before

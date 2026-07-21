@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -26,3 +28,4 @@ class ExecutionConfig:
     parameters through every constructor.
     """
     relative_to_source: bool = False
+    resolve_from: Optional[Path] = None

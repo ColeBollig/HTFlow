@@ -64,9 +64,9 @@ By default, relative paths inside a submit file (`executable`, `transfer_input_f
 - `htflow execute manual` spawns each task without changing directories.
 - `htflow convert` writes `JOB` lines with each submit file's absolute path and no DAGMan `DIR` clause.
 
-Pass `--relative-to-source` to restore the opposite behavior — each JDL's own directory becomes the base for its relative paths (a per-task `chdir` for `execute`, a DAGMan `DIR <directory>` clause for `convert`). Both behaviors are driven by a single shared `ExecutionConfig` object; see [`docs/config.md`](docs/config.md).
+Pass `--relative-to-source` to restore the opposite behavior — each JDL's own directory becomes the base for its relative paths (a per-task `chdir` for `execute`, a DAGMan `DIR <directory>` clause for `convert`). Or pass `--resolve-from PATH` for a fundamentally different approach: instead of changing where anything runs, it rewrites each node's relative `transfer_input_files`/`transfer_output_files` entries in place to absolute paths under `PATH` (URLs and already-absolute entries are left alone). It never touches `executable`/`arguments` and never changes any working directory — `execute`/`convert` behave exactly as the default case once the rewrite is done. The two flags are mutually exclusive. All three behaviors are driven by a single shared `ExecutionConfig` object; see [`docs/config.md`](docs/config.md).
 
-The same flag also governs where job-type-shape resolved submit files land — see [Engine Working Directory](#engine-working-directory) below.
+`--relative-to-source` also governs where job-type-shape resolved submit files land — see [Engine Working Directory](#engine-working-directory) below. `--resolve-from` reuses that same resolved-file mechanism (writing a `.resolved` file only when a rewrite actually happened) but does not change its placement.
 
 ---
 
@@ -91,7 +91,7 @@ When `execute` runs, it creates a `flowman/` directory in the current working di
 
 - `flowman.lock` — exclusive file lock preventing concurrent engine runs
 - `manual.state` — completion log used by `Recover()` to resume interrupted runs
-- `produced/resolved/` — job-type-shape resolved submit files, created by `execute` **or** `convert` whenever a `JobType` shape changes a node's transfer lists (see [Job Type Shapes](docs/dataflow.md#job-type-shapes)) and `--relative-to-source` isn't set. Only created when there's actually something to resolve.
+- `produced/resolved/` — resolved submit files, created by `execute` **or** `convert` whenever a node's transfer lists change — from a `JobType` shape (see [Job Type Shapes](docs/dataflow.md#job-type-shapes)), from `--resolve-from` rewriting a relative entry to absolute, or both — and `--relative-to-source` isn't set. Only created when there's actually something to resolve.
 
 Run `htflow cleanup` to remove this directory once a workflow is complete.
 
