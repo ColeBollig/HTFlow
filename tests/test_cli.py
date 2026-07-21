@@ -100,6 +100,20 @@ class TestConvert:
         run_cli("convert", str(dag), "--jdl", str(a))
         assert str(dag) in capsys.readouterr().out
 
+    def test_diamond_topology_written_correctly(self, make_sub, tmp_path):
+        """End-to-end through the actual CLI path (arg parsing -> collect_jdl_files
+        -> HTCondorDataFlow -> write()), not just HTCondorDataFlow directly."""
+        a = make_sub("a", outputs=["shared.txt"])
+        b = make_sub("b", inputs=["shared.txt"], outputs=["b_out.txt"])
+        c = make_sub("c", inputs=["shared.txt"], outputs=["c_out.txt"])
+        e = make_sub("e", inputs=["b_out.txt", "c_out.txt"])
+        dag = tmp_path / "out.dag"
+        assert run_cli("convert", str(dag), "--jdl", str(a), str(b), str(c), str(e)) == 0
+        content = dag.read_text()
+        assert content.count("PARENT") == 2
+        assert "PARENT NODE-0 CHILD NODE-1 NODE-2" in content
+        assert "PARENT NODE-1 NODE-2 CHILD NODE-3" in content
+
 
 # ---------------------------------------------------------------------------
 # show files

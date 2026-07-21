@@ -1011,3 +1011,275 @@ class TestResolveFrom:
         before = Path.cwd()
         HTCondorDataFlow(files=[a], config=config).generate()
         assert Path.cwd() == before
+
+
+# ---------------------------------------------------------------------------
+# End-to-end regression: larger/varied topologies built from real JDL inputs
+# ---------------------------------------------------------------------------
+
+class TestEndToEndTopologies:
+    """High-level regression tests verifying generate()/write()/groupings/mapping
+    all agree on the resulting DAG for larger, varied, and combined-feature inputs
+    — as opposed to the narrow 1-2 node scenarios covered elsewhere in this file."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cwd(self, tmp_path):
+        """Several scenarios below combine job type shapes and/or resolve_from,
+        either of which can trigger Engine.work_dir() (a relative 'flowman' path)
+        via the resolved-file pipeline; isolate cwd for the whole class so no
+        scenario can leak a real flowman/ into the test runner's actual cwd."""
+        with ChangeDir(tmp_path):
+            yield
+
+    def test_deep_chain_with_branching_at_multiple_levels(self, make_sub, tmp_path):
+        """A -> B -> (C, D) -> E -> (F, G) -> H: two branch/converge stages chained
+        together, deeper and wider than any single existing generate()/write() test."""
+        a = make_sub("a", outputs=["ab.txt"])
+        b = make_sub("b", inputs=["ab.txt"], outputs=["bcd.txt"])
+        c = make_sub("c", inputs=["bcd.txt"], outputs=["ce.txt"])
+        d_ = make_sub("d", inputs=["bcd.txt"], outputs=["de.txt"])
+        e = make_sub("e", inputs=["ce.txt", "de.txt"], outputs=["efg.txt"])
+        f = make_sub("f", inputs=["efg.txt"], outputs=["fh.txt"])
+        g = make_sub("g", inputs=["efg.txt"], outputs=["gh.txt"])
+        h = make_sub("h", inputs=["fh.txt", "gh.txt"])
+
+        df = HTCondorDataFlow(files=[a, b, c, d_, e, f, g, h])
+        dag = df.generate()
+
+        assert dag[1].id in dag[0].children                                # a -> b
+        assert dag[2].id in dag[1].children and dag[3].id in dag[1].children  # b -> c, d
+        assert dag[4].id in dag[2].children and dag[4].id in dag[3].children  # c, d -> e
+        assert dag[5].id in dag[4].children and dag[6].id in dag[4].children  # e -> f, g
+        assert dag[7].id in dag[5].children and dag[7].id in dag[6].children  # f, g -> h
+
+        roots, intermediate, leafs = df.groupings
+        assert roots == [] and leafs == []
+        assert len(intermediate) == 7
+
+        dag_path = tmp_path / "out.dag"
+        df.filename = str(dag_path)
+        df.write()
+        content = dag_path.read_text()
+        assert content.count("PARENT") == 5
+        assert "PARENT NODE-0 CHILD NODE-1" in content
+        assert "PARENT NODE-1 CHILD NODE-2 NODE-3" in content
+        assert "PARENT NODE-2 NODE-3 CHILD NODE-4" in content
+        assert "PARENT NODE-4 CHILD NODE-5 NODE-6" in content
+        assert "PARENT NODE-5 NODE-6 CHILD NODE-7" in content
+
+    def test_multiple_disconnected_components_no_cross_contamination(self, make_sub):
+        """A linear chain and a diamond, entirely unrelated to each other, processed
+        in one HTCondorDataFlow run — neither component's edges/groupings should
+        leak into the other's."""
+        a1 = make_sub("a1", inputs=["chain1_ext.txt"], outputs=["chain1_link.txt"])
+        b1 = make_sub("b1", inputs=["chain1_link.txt"])
+
+        a2 = make_sub("a2", outputs=["diamond_shared.txt"])
+        b2 = make_sub("b2", inputs=["diamond_shared.txt"], outputs=["b2_out.txt"])
+        c2 = make_sub("c2", inputs=["diamond_shared.txt"], outputs=["c2_out.txt"])
+        d2 = make_sub("d2", inputs=["b2_out.txt", "c2_out.txt"], outputs=["final.txt"])
+
+        df = HTCondorDataFlow(files=[a1, b1, a2, b2, c2, d2])
+        dag = df.generate()
+
+        # Chain 1 (NODE-0, NODE-1) only relates to itself
+        assert dag[1].id in dag[0].children
+        assert dag[1].children is None
+        assert dag[0].parents is None
+
+        # Diamond (NODE-2..5) only relates to itself
+        assert dag[3].id in dag[2].children and dag[4].id in dag[2].children
+        assert dag[5].id in dag[3].children and dag[5].id in dag[4].children
+        assert dag[2].parents is None
+
+        roots, intermediate, leafs = df.groupings
+        assert Path("chain1_ext.txt") in roots
+        assert Path("final.txt") in leafs
+        assert set(intermediate) == {
+            Path("chain1_link.txt"), Path("diamond_shared.txt"),
+            Path("b2_out.txt"), Path("c2_out.txt"),
+        }
+
+    def test_wide_fan_out_and_fan_in(self, make_sub):
+        """One root feeding 5 leaves, and separately 5 producers feeding one sink —
+        checked via groupings/mapping, not just .dag string content."""
+        root = make_sub("root", outputs=["wide_shared.txt"])
+        leaves = [make_sub(f"leaf{i}", inputs=["wide_shared.txt"]) for i in range(1, 6)]
+        producers = [make_sub(f"prod{i}", outputs=[f"in{i}.txt"]) for i in range(1, 6)]
+        sink = make_sub("sink", inputs=[f"in{i}.txt" for i in range(1, 6)])
+
+        df = HTCondorDataFlow(files=[root, *leaves, *producers, sink])
+        dag = df.generate()
+
+        assert dag[0].children == {1, 2, 3, 4, 5}
+        for i in range(1, 6):
+            assert dag[i].parents == {0}
+
+        assert dag[11].parents == {6, 7, 8, 9, 10}
+        for i in range(6, 11):
+            assert dag[i].children == {11}
+
+        roots, intermediate, leafs = df.groupings
+        assert roots == [] and leafs == []
+        assert Path("wide_shared.txt") in intermediate
+        for i in range(1, 6):
+            assert Path(f"in{i}.txt") in intermediate
+
+        src, deps = df.mapping[Path("wide_shared.txt")]
+        assert src == 0
+        assert set(deps) == {1, 2, 3, 4, 5}
+
+    def test_isolated_no_transfer_node_inside_larger_graph(self, make_sub, tmp_path):
+        """A node with no transfer_input_files/transfer_output_files at all, sitting
+        alongside an otherwise fully-connected diamond, should never appear in any
+        edge, grouping, or PARENT/CHILD line."""
+        isolated = make_sub("isolated")
+        a = make_sub("a", outputs=["shared.txt"])
+        b = make_sub("b", inputs=["shared.txt"], outputs=["b_out.txt"])
+        c = make_sub("c", inputs=["shared.txt"], outputs=["c_out.txt"])
+        e = make_sub("e", inputs=["b_out.txt", "c_out.txt"])
+
+        df = HTCondorDataFlow(files=[isolated, a, b, c, e])
+        dag = df.generate()
+
+        assert dag[0].children is None
+        assert dag[0].parents is None
+        assert dag[2].id in dag[1].children and dag[3].id in dag[1].children
+        assert dag[4].id in dag[2].children and dag[4].id in dag[3].children
+
+        for src, deps in df.mapping.values():
+            assert src != 0
+            assert 0 not in deps
+
+        dag_path = tmp_path / "out.dag"
+        df.filename = str(dag_path)
+        df.write()
+        content = dag_path.read_text()
+        assert "JOB NODE-0" in content
+        assert "PARENT NODE-0" not in content
+        assert "CHILD NODE-0" not in content
+
+    def test_multiple_job_types_cross_linked(self, make_sub):
+        """Three distinct JobTypes coexisting in one graph: a shape-injected root
+        input, a node combining a real declared input with shape-injected input
+        AND output, and shape-injected output consumed by both a real declared
+        input elsewhere and another node's shape-injected input."""
+        fetch_job = make_sub("fetch_job", outputs=["raw_data.txt"], extra="JobType = fetch")
+        compute_job = make_sub("compute_job", inputs=["raw_data.txt"], extra="JobType = compute")
+        notify_job = make_sub("notify_job", inputs=["model.bin"])
+        audit_job = make_sub("audit_job", extra="JobType = audit")
+
+        shapes = {
+            "fetch": {"InputFiles": "fetch_creds.txt"},
+            "compute": {"InputFiles": "compute_lib.tar.gz", "OutputFiles": "model.bin"},
+            "audit": {"InputFiles": "model.bin"},
+        }
+        df = HTCondorDataFlow(files=[fetch_job, compute_job, notify_job, audit_job], job_shapes=shapes)
+        dag = df.generate()
+
+        assert dag[1].id in dag[0].children               # fetch -> compute (raw_data.txt)
+        assert dag[2].id in dag[1].children                # compute -> notify (shape-injected model.bin)
+        assert dag[3].id in dag[1].children                # compute -> audit (shape-to-shape link)
+
+        assert dag[0].internal != fetch_job
+        assert dag[1].internal != compute_job
+        assert dag[2].internal == notify_job               # untouched: no JobType, no shape merge
+        assert dag[3].internal != audit_job
+
+        roots, intermediate, leafs = df.groupings
+        assert Path("fetch_creds.txt") in roots
+        assert Path("compute_lib.tar.gz") in roots
+        assert Path("raw_data.txt") in intermediate
+        assert Path("model.bin") in intermediate
+        assert leafs == []
+
+    def test_job_type_shape_combined_with_resolve_from(self, make_sub, tmp_path):
+        """A node's declared input AND its shape-injected output both get rewritten
+        to absolute paths under the same resolve_from base, so the edge to a
+        downstream (shape-free) consumer survives the rewrite."""
+        target = tmp_path / "target"
+        target.mkdir()
+
+        worker_job = make_sub("worker_job", inputs=["local_rel.txt"], extra="JobType = worker")
+        consumer_job = make_sub("consumer_job", inputs=["shape_out.txt"])
+
+        shapes = {"worker": {"OutputFiles": "shape_out.txt"}}
+        config = ExecutionConfig(resolve_from=target)
+        df = HTCondorDataFlow(files=[worker_job, consumer_job], job_shapes=shapes, config=config)
+        dag = df.generate()
+
+        assert dag[1].id in dag[0].children
+
+        worker_content = dag[0].internal.read_text()
+        assert f"transfer_input_files = {target / 'local_rel.txt'}" in worker_content
+        assert f"transfer_output_files = {target / 'shape_out.txt'}" in worker_content
+
+        # consumer_job had no JobType/shape, but resolve_from still rewrote its
+        # declared (previously relative) input, so it also gets a resolved file.
+        assert dag[1].internal != consumer_job
+        consumer_content = dag[1].internal.read_text()
+        assert f"transfer_input_files = {target / 'shape_out.txt'}" in consumer_content
+
+    def test_job_type_shape_combined_with_relative_to_source(self, make_sub, tmp_path):
+        """A shape-injected output edge survives under relative_to_source, and the
+        resolved file for the shape-bearing node is written beside its original
+        JDL rather than centralized under flowman/."""
+        worker_job = make_sub("worker_job", extra="JobType = worker")
+        consumer_job = make_sub("consumer_job", inputs=["shape_out.txt"])
+
+        shapes = {"worker": {"OutputFiles": "shape_out.txt"}}
+        config = ExecutionConfig(relative_to_source=True)
+        df = HTCondorDataFlow(files=[worker_job, consumer_job], job_shapes=shapes, config=config)
+        dag = df.generate()
+
+        assert dag[1].id in dag[0].children
+        assert dag[0].internal == worker_job.with_suffix(worker_job.suffix + ".resolved")
+        assert not Engine.work_dir().exists()
+
+        dag_path = tmp_path / "out.dag"
+        df.filename = str(dag_path)
+        df.write()
+        content = dag_path.read_text()
+        # cwd is isolated to tmp_path (both JDLs' own directory), so no DIR clause
+        assert "DIR" not in content
+        assert "JOB NODE-0" in content
+        assert "JOB NODE-1" in content
+
+    def test_url_input_mixed_with_file_based_parents(self, make_sub):
+        """A node with both a real file-based parent and a URL-scheme external
+        input, embedded in a larger multi-node chain."""
+        a = make_sub("a", outputs=["a_out.txt"])
+        b = make_sub("b", inputs=["a_out.txt", "osdf:///fed/shared_dataset.txt"], outputs=["b_out.txt"])
+        c = make_sub("c", inputs=["b_out.txt"])
+
+        df = HTCondorDataFlow(files=[a, b, c])
+        dag = df.generate()
+
+        assert dag[1].id in dag[0].children
+        assert dag[2].id in dag[1].children
+
+        roots, intermediate, leafs = df.groupings
+        assert "osdf:///fed/shared_dataset.txt" in roots
+        assert Path("a_out.txt") in intermediate
+        assert Path("b_out.txt") in intermediate
+
+        src, deps = df.mapping["osdf:///fed/shared_dataset.txt"]
+        assert src is None
+        assert deps == [1]
+
+    def test_three_node_cycle_raises(self, make_sub):
+        """A longer reachable cycle (a -> b -> c -> a), not just a direct A<->B pair."""
+        a = make_sub("a", inputs=["z.txt"], outputs=["x.txt"])
+        b = make_sub("b", inputs=["x.txt"], outputs=["y.txt"])
+        c = make_sub("c", inputs=["y.txt"], outputs=["z.txt"])
+        with pytest.raises(RuntimeError, match="cycle"):
+            HTCondorDataFlow(files=[a, b, c]).generate()
+
+    def test_cycle_via_job_type_shape_injected_file(self, make_sub):
+        """A cycle formed only because a job type shape injects an output file that
+        loops back to a node's own declared input — not a directly-declared cycle."""
+        node1 = make_sub("node1", inputs=["node2_out.txt"], extra="JobType = loopy")
+        node2 = make_sub("node2", inputs=["shape_injected.txt"], outputs=["node2_out.txt"])
+        shapes = {"loopy": {"OutputFiles": "shape_injected.txt"}}
+        with pytest.raises(RuntimeError, match="cycle"):
+            HTCondorDataFlow(files=[node1, node2], job_shapes=shapes).generate()
