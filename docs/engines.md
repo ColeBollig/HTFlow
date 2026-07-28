@@ -72,6 +72,65 @@ while (code := engine.Terminate()) is None:
 
 ---
 
+## `NodeState`
+
+`htflow.engines._internal.NodeState` is an enum of the node execution states shared across every engine's node wrapper:
+
+| State     | Description                                                           |
+|-----------|-----------------------------------------------------------------------|
+| `BLOCKED` | Waiting for one or more parent nodes to complete                      |
+| `READY`   | All parents have succeeded; queued for execution                      |
+| `ACTIVE`  | Task is running                                                       |
+| `SUCCESS` | Task completed successfully (terminal)                                |
+| `FAILURE` | Task failed, or failed to launch (terminal)                           |
+| `ORPHAN`  | A parent or ancestor failed; this node will never run (terminal)      |
+
+```
+BLOCKED ──► READY ──► ACTIVE ──► SUCCESS
+   │           │          │
+   └───────────┴──────────┴──► FAILURE
+                               ORPHAN
+```
+
+State transitions are validated by the `state` setter — setting an illegal transition raises `RuntimeError`.
+
+---
+
+## `NodeInternal` (Abstract Base Class)
+
+`htflow.engines._internal.NodeInternal` wraps a `dag.Node` with the execution-state bookkeeping common to every engine — state transitions, parent/child notification, and failure/orphan propagation. Concrete engines subclass it and implement `Execute()` for their own task-launching mechanism; `ManualNode` (below) is the only current subclass.
+
+### Constructor
+
+```python
+NodeInternal(node: dag.Node, config: Optional[ExecutionConfig] = None)
+```
+
+Validates that `node` is a `dag.Node`, starts the node in `NodeState.BLOCKED`, and seeds `_waiting_on` from `node.parents`.
+
+### Properties
+
+| Property  | Type              | Description                             |
+|-----------|-------------------|------------------------------------------|
+| `failure` | `Optional[str]`   | The reason passed to `Fail()`, if any     |
+| `jdl`     | `Path`            | This node's original JDL path             |
+| `state`   | `NodeState`       | Current state; the setter validates transitions (see [`NodeState`](#nodestate)) |
+
+### Key Methods
+
+| Method                          | Description                                                                              |
+|---------------------------------|--------------------------------------------------------------------------------------------|
+| `IsBlocked/Ready/Active()`      | State predicates                                                                         |
+| `IsFailed/IsSuccess/IsOrphan()` | Terminal state predicates                                                                |
+| `IsTerminal()`                  | `True` when in `SUCCESS`, `FAILURE`, or `ORPHAN`                                        |
+| `Notify(parent_id)` → `bool`   | Called when a parent succeeds; returns `True` when all parents have reported in          |
+| `Done(dag)`                     | Transitions to `SUCCESS` and notifies children, readying any that are now unblocked      |
+| `Fail(dag, reason)`             | Transitions to `FAILURE` and orphans all children                                        |
+| `Orphaned(dag)`                 | Recursively marks this node and all descendants as `ORPHAN`                             |
+| `Execute()`                     | **Abstract.** Subclasses implement how the node's task is actually launched              |
+
+---
+
 ## `ManualEngine`
 
 `htflow.engines.manual.ManualEngine` executes DAG nodes locally as subprocesses, one batch at a time. It reads the `executable` and `arguments` fields from each node's HTCondor submit file and spawns a `subprocess.Popen` process.
@@ -158,42 +217,17 @@ exit(code)
 
 ## `ManualNode`
 
-Wraps a `dag.Node` with execution state and process tracking for use by `ManualEngine`. Nodes are not created directly — `ManualEngine.__init__()` creates one per DAG node.
+`htflow.engines.manual.ManualNode` subclasses [`NodeInternal`](#nodeinternal-abstract-base-class), adding subprocess tracking for use by `ManualEngine`. Nodes are not created directly — `ManualEngine.__init__()` creates one per DAG node. All state-machine behavior (states, transitions, `Notify`/`Done`/`Fail`/`Orphaned`) is inherited unchanged from `NodeInternal`; `Recover()` can also transition `BLOCKED` or `READY` nodes directly to `SUCCESS` when restoring a prior run's state.
 
-### State Machine
+### Properties
 
-```
-BLOCKED ──► READY ──► ACTIVE ──► SUCCESS
-   │           │          │
-   └───────────┴──────────┴──► FAILURE
-                               ORPHAN
-```
+| Property  | Type                          | Description                                              |
+|-----------|-------------------------------|-----------------------------------------------------------|
+| `process` | `Optional[subprocess.Popen]`  | The node's spawned subprocess, once `Execute()` has run   |
 
-`Recover()` can also transition `BLOCKED` or `READY` nodes directly to `SUCCESS` when restoring a prior run's state.
+### `Execute()`
 
-| State     | Description                                                           |
-|-----------|-----------------------------------------------------------------------|
-| `BLOCKED` | Waiting for one or more parent nodes to complete                      |
-| `READY`   | All parents have succeeded; queued for execution                      |
-| `ACTIVE`  | Subprocess is running                                                 |
-| `SUCCESS` | Subprocess exited with code `0` (terminal)                           |
-| `FAILURE` | Subprocess exited non-zero, or failed to launch (terminal)           |
-| `ORPHAN`  | A parent or ancestor failed; this node will never run (terminal)     |
-
-State transitions are validated — setting an illegal transition raises `RuntimeError`.
-
-### Key Methods
-
-| Method                          | Description                                                                              |
-|---------------------------------|------------------------------------------------------------------------------------------|
-| `IsBlocked/Ready/Active()`      | State predicates                                                                         |
-| `IsFailed/IsSuccess/IsOrphan()` | Terminal state predicates                                                                |
-| `IsTerminal()`                  | `True` when in `SUCCESS`, `FAILURE`, or `ORPHAN`                                        |
-| `Notify(parent_id)` → `bool`   | Called when a parent succeeds; returns `True` when all parents have reported in          |
-| `Execute()`                     | Reads the JDL file, builds the command, and spawns the subprocess                       |
-| `Done(dag)`                     | Transitions to `SUCCESS` and notifies children — does not itself write the state file; the caller (`ManualEngine.Update()`) appends the completion line after invoking `Done()` |
-| `Fail(dag)`                     | Transitions to `FAILURE` and orphans all children                                       |
-| `Orphaned(dag)`                 | Recursively marks this node and all descendants as `ORPHAN`                             |
+Reads the JDL file, builds the command from its `executable`/`arguments` fields, spawns the subprocess, and transitions to `NodeState.ACTIVE`. `Done()` does not itself write the state file; the caller (`ManualEngine.Update()`) appends the completion line after invoking `Done()`.
 
 ---
 
