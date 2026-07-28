@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .engine import Engine
+from ._internal import *
 from ..config import ExecutionConfig
 from ..utils.directory import ChangeDir
 from .. import dag
@@ -27,98 +28,15 @@ import htcondor2
 
 logger = logging.getLogger(__name__)
 
-class ManualNodeState(enum.Enum):
-    BLOCKED = 0
-    READY   = 1
-    ACTIVE  = 2
-    SUCCESS = 3
-    FAILURE = 4
-    ORPHAN  = 5
-
-
-class ManualNode():
+class ManualNode(NodeInternal):
     def __init__(self, node: dag.Node, config: Optional[ExecutionConfig] = None) -> None:
-        if not isinstance(node, dag.Node):
-            raise ValueError("node must be dag.Node")
+        super().__init__(node, config)
 
-        self._node = node
-        self._jdl = node.internal
-        self._config = config or ExecutionConfig()
         self._proc = None
-        self._state = ManualNodeState.BLOCKED
-        self._waiting_on = None if node.parents is None else set(node.parents)
-        self._failure_reason = None
-
-    def __repr__(self) -> str:
-        return f"{self._jdl} ({self._state.name}): '{self._failure_reason}'"
-
-    @property
-    def failure(self) -> Optional[str]:
-        return self._failure_reason
-
-    @property
-    def jdl(self) -> Path:
-        return self._jdl
 
     @property
     def process(self) -> Optional[subprocess.Popen]:
         return self._proc
-
-    @property
-    def state(self) -> ManualNodeState:
-        return self._state
-
-    @state.setter
-    def state(self, val) -> None:
-        if not isinstance(val, ManualNodeState):
-            raise ValueError(f"Invalid manual node state type provided ({type(val)})")
-
-        STATE_TRANSITIONS = {
-            ManualNodeState.BLOCKED: [ ManualNodeState.READY, ManualNodeState.SUCCESS, ManualNodeState.ORPHAN ],
-            ManualNodeState.READY:   [ ManualNodeState.ACTIVE, ManualNodeState.SUCCESS, ManualNodeState.FAILURE, ManualNodeState.ORPHAN ],
-            ManualNodeState.ACTIVE:  [ ManualNodeState.SUCCESS, ManualNodeState.FAILURE, ManualNodeState.ORPHAN ],
-            ManualNodeState.SUCCESS: None,
-            ManualNodeState.FAILURE: None,
-            ManualNodeState.ORPHAN:  None,
-        }
-
-        if val not in STATE_TRANSITIONS:
-            raise RuntimeError(f"Unknown state transition {val.name} specified")
-        elif STATE_TRANSITIONS[self._state] is None:
-            raise RuntimeError(f"Current state {self._state.name} does not allow transitions")
-        elif val not in STATE_TRANSITIONS[self._state]:
-            raise RuntimeError(f"Illegal state transition from {self._state.name} to {val.name}")
-
-        logger.debug("Switching node %s state: %s -> %s", self._node.internal.jdl, self._state.name, val.name)
-
-        self._state = val
-
-    def IsBlocked(self) -> bool:
-        return self._state == ManualNodeState.BLOCKED
-
-    def IsReady(self) -> bool:
-        return self._state == ManualNodeState.READY
-
-    def IsActive(self) -> bool:
-        return self._state == ManualNodeState.ACTIVE
-
-    def IsOrphan(self) -> bool:
-        return self._state == ManualNodeState.ORPHAN
-
-    def IsFailed(self) -> bool:
-        return self._state == ManualNodeState.FAILURE
-
-    def IsSuccess(self) -> bool:
-        return self._state == ManualNodeState.SUCCESS
-
-    def IsTerminal(self) -> bool:
-        return self._state in [ ManualNodeState.SUCCESS, ManualNodeState.FAILURE, ManualNodeState.ORPHAN ]
-
-    def Notify(self, parent_id: int) -> bool:
-        assert self._waiting_on is not None
-        assert parent_id in self._waiting_on
-        self._waiting_on.remove(parent_id)
-        return len(self._waiting_on) == 0
 
     def Execute(self) -> None:
         with open(self._jdl, "r") as f:
@@ -141,38 +59,8 @@ class ManualNode():
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
             )
-        self.state = ManualNodeState.ACTIVE
+        self.state = NodeState.ACTIVE
 
-    def Orphaned(self, dag: dag.Dag) -> None:
-        # Already orphaned so return now to save time
-        if self._state == ManualNodeState.ORPHAN:
-            return
-
-        # Recursively orphan children
-        if self._node.children is not None:
-            for i in self._node.children:
-                dag[i].internal.Orphaned(dag)
-
-        # Don't attempt to change state from other terminal states
-        # future proofing incase nodes are pre-done
-        if not self.IsTerminal():
-            self.state = ManualNodeState.ORPHAN
-
-    def Fail(self, dag: dag.Dag, reason: str = "Failure reason unkown") -> None:
-        if self._node.children is not None:
-            for i in self._node.children:
-                dag[i].internal.Orphaned(dag)
-        self.state = ManualNodeState.FAILURE
-        self._failure_reason = reason
-
-    def Done(self, dag: dag.Dag) -> None:
-        if self._node.children is not None:
-            for i in self._node.children:
-                child = dag[i]
-                if child.internal.Notify(self._node.id):
-                    if not child.internal.IsTerminal():
-                        dag.internal.prepare(child)
-        self.state = ManualNodeState.SUCCESS
 
 class ManualDag():
     def __init__(self) -> None:
@@ -193,7 +81,7 @@ class ManualDag():
         logger.info("Readying node %s for execution", node.internal.jdl)
 
         self._ready_nodes.add(node.id)
-        node.internal.state = ManualNodeState.READY
+        node.internal.state = NodeState.READY
 
     @property
     def active_nodes(self) -> Set[int]:
