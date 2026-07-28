@@ -13,14 +13,13 @@
 # limitations under the License.
 
 from .engine import Engine
-from ._internal import *
+from ._internal import NodeState, NodeInternal
 from ..config import ExecutionConfig
 from ..utils.directory import ChangeDir
 from .. import dag
 from typing import Set, Optional
 from pathlib import Path
 from time import time as now
-import enum
 import subprocess
 import shlex
 import logging
@@ -30,8 +29,9 @@ logger = logging.getLogger(__name__)
 
 class ManualNode(NodeInternal):
     def __init__(self, node: dag.Node, config: Optional[ExecutionConfig] = None) -> None:
-        super().__init__(node, config)
+        super().__init__(node)
 
+        self._config = config or ExecutionConfig()
         self._proc = None
 
     @property

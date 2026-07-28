@@ -13,9 +13,8 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from ..config import ExecutionConfig
 from .. import dag
-from typing import Set, Optional
+from typing import Optional
 from pathlib import Path
 import enum
 import logging
@@ -34,13 +33,12 @@ class NodeState(enum.Enum):
 class NodeInternal(ABC):
     """Abstract class of node structure common across various engines"""
 
-    def __init__(self, node: dag.Node, config: Optional[ExecutionConfig] = None) -> None:
+    def __init__(self, node: dag.Node) -> None:
         if not isinstance(node, dag.Node):
             raise ValueError("node must be dag.Node")
 
         self._node = node
         self._jdl = node.internal
-        self._config = config or ExecutionConfig()
         self._state = NodeState.BLOCKED
         self._waiting_on = None if node.parents is None else set(node.parents)
         self._failure_reason = None
@@ -86,7 +84,7 @@ class NodeInternal(ABC):
         elif val not in STATE_TRANSITIONS[self._state]:
             raise RuntimeError(f"Illegal state transition from {self._state.name} to {val.name}")
 
-        logger.debug("Switching node %s state: %s -> %s", self._node.internal.jdl, self._state.name, val.name)
+        logger.debug("Switching node %s state: %s -> %s", self._jdl, self._state.name, val.name)
 
         self._state = val
 
