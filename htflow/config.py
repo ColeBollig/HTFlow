@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .utils.naming import DEFAULT_NODE_NAME_LENGTH, validate_node_name_length
+
 
 @dataclass(frozen=True)
 class ExecutionConfig:
@@ -29,3 +31,7 @@ class ExecutionConfig:
     """
     relative_to_source: bool = False
     resolve_from: Optional[Path] = None
+    node_name_length: int = DEFAULT_NODE_NAME_LENGTH
+
+    def __post_init__(self) -> None:
+        validate_node_name_length(self.node_name_length)

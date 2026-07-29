@@ -9,15 +9,20 @@
 ```python
 from htflow.config import ExecutionConfig
 
-ExecutionConfig(relative_to_source: bool = False, resolve_from: Optional[Path] = None)
+ExecutionConfig(
+    relative_to_source: bool = False,
+    resolve_from: Optional[Path] = None,
+    node_name_length: int = 16,
+)
 ```
 
 | Field                | Type              | Description                                                                 |
 |----------------------|-------------------|-------------------------------------------------------------------------------|
 | `relative_to_source` | `bool`            | When `True`, relative paths in a submit file resolve against that submit file's own directory instead of the current working directory. See below for what this means per consumer. Defaults to `False`. |
 | `resolve_from`        | `Optional[Path]` | When set, relative entries in a submit file's `transfer_input_files`/`transfer_output_files` are rewritten to absolute paths anchored at this directory. Mutually exclusive with `relative_to_source`. Defaults to `None`. |
+| `node_name_length`    | `int`            | Length (in hex characters) of the SHA-256-derived node names `HTCondorDataFlow` assigns — see [`docs/dataflow.md`](dataflow.md#node-naming). Must be between `4` and `64` inclusive (`htflow.utils.naming.MIN_NODE_NAME_LENGTH`/`MAX_NODE_NAME_LENGTH`); the constructor raises `ValueError` otherwise. Defaults to `16`. Exposed on the CLI as `--node-name-length`, an intentionally undocumented/hidden flag (suppressed from `--help`) — see [`docs/cli.md`](cli.md). |
 
-`ExecutionConfig` is a frozen `dataclass` — instances are immutable once created.
+`ExecutionConfig` is a frozen `dataclass` — instances are immutable once created. Its `__post_init__` validates `node_name_length` at construction time; the other fields are unvalidated here (the CLI enforces their constraints itself — e.g. `--resolve-from` must be an absolute, existing directory).
 
 `relative_to_source` and `resolve_from` take fundamentally different approaches to the same underlying concern (where a submit file's relative file paths point): `relative_to_source` changes *where the job runs from* (a chdir for `execute`, a DAGMan `DIR` clause for `convert`), while `resolve_from` changes *the submit file's own content* — it never changes any process's or job's working directory. Only one should be set on a given instance — nothing in `ExecutionConfig` itself enforces this (the CLI enforces it via a mutually exclusive argument group; see [`docs/cli.md`](cli.md)).
 

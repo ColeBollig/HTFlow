@@ -266,12 +266,77 @@ class TestGenerate:
         d2 = df.generate()
         assert len(d1) == len(d2) == 2
 
-    def test_node_names_are_sequential(self, make_sub):
+    def test_node_names_are_content_addressed(self, make_sub, node_name):
         a = make_sub("a")
         b = make_sub("b")
         d = HTCondorDataFlow(files=[a, b]).generate()
-        assert d[0].name == "NODE-0"
-        assert d[1].name == "NODE-1"
+        assert d[0].name == node_name(a)
+        assert d[1].name == node_name(b)
+
+    def test_node_names_are_deterministic_for_same_path(self, make_sub):
+        a = make_sub("a")
+        d1 = HTCondorDataFlow(files=[a]).generate()
+        d2 = HTCondorDataFlow(files=[a]).generate()
+        assert d1[0].name == d2[0].name
+
+    def test_dag_internal_maps_node_name_to_id(self, make_sub, node_name):
+        a = make_sub("a")
+        b = make_sub("b")
+        df = HTCondorDataFlow(files=[a, b])
+        d = df.generate()
+        assert d.internal == {node_name(a): 0, node_name(b): 1}
+
+    def test_node_name_independent_of_list_order(self, make_sub, node_name):
+        """A node's name is a function of its own path only — reordering the
+        files list must not change what name either path hashes to."""
+        a = make_sub("a")
+        b = make_sub("b")
+        forward = HTCondorDataFlow(files=[a, b]).generate()
+        backward = HTCondorDataFlow(files=[b, a]).generate()
+        assert forward[0].name == node_name(a) == backward[1].name
+        assert forward[1].name == node_name(b) == backward[0].name
+
+    def test_dag_internal_depends_on_list_order_even_though_names_dont(self, make_sub, node_name):
+        """Node *names* don't depend on list order (previous test), but node
+        *ids* — and therefore dag.internal, which maps name -> id — are assigned
+        by position in files=[...], so swapping the order changes the mapping
+        even though the same two names appear in both."""
+        a = make_sub("a")
+        b = make_sub("b")
+        forward = HTCondorDataFlow(files=[a, b]).generate()
+        backward = HTCondorDataFlow(files=[b, a]).generate()
+
+        assert set(forward.internal) == set(backward.internal) == {node_name(a), node_name(b)}
+        assert forward.internal[node_name(a)] == 0 and forward.internal[node_name(b)] == 1
+        assert backward.internal[node_name(a)] == 1 and backward.internal[node_name(b)] == 0
+        assert forward.internal != backward.internal
+
+    def test_default_node_name_length_is_16(self, make_sub):
+        a = make_sub("a")
+        d = HTCondorDataFlow(files=[a]).generate()
+        assert len(d[0].name) == 16
+
+    def test_custom_node_name_length_via_config(self, make_sub, node_name):
+        a = make_sub("a")
+        config = ExecutionConfig(node_name_length=4)
+        d = HTCondorDataFlow(files=[a], config=config).generate()
+        assert d[0].name == node_name(a, length=4)
+        assert len(d[0].name) == 4
+
+    def test_full_length_node_name_via_config(self, make_sub, node_name):
+        a = make_sub("a")
+        config = ExecutionConfig(node_name_length=64)
+        d = HTCondorDataFlow(files=[a], config=config).generate()
+        assert d[0].name == node_name(a, length=64)
+        assert len(d[0].name) == 64
+
+    def test_node_name_length_below_minimum_raises(self):
+        with pytest.raises(ValueError):
+            ExecutionConfig(node_name_length=3)
+
+    def test_node_name_length_above_maximum_raises(self):
+        with pytest.raises(ValueError):
+            ExecutionConfig(node_name_length=65)
 
 
 # ---------------------------------------------------------------------------
@@ -554,14 +619,14 @@ class TestWrite:
         HTCondorDataFlow(files=[f], filename=str(dag_path)).write()
         assert dag_path.exists()
 
-    def test_contains_job_entry_for_each_node(self, make_sub, tmp_path):
+    def test_contains_job_entry_for_each_node(self, make_sub, tmp_path, node_name):
         a = make_sub("a")
         b = make_sub("b")
         dag_path = tmp_path / "out.dag"
         HTCondorDataFlow(files=[a, b], filename=str(dag_path)).write()
         content = dag_path.read_text()
-        assert "JOB NODE-0" in content
-        assert "JOB NODE-1" in content
+        assert f"JOB {node_name(a)}" in content
+        assert f"JOB {node_name(b)}" in content
 
     def test_job_line_contains_jdl_path(self, make_sub, tmp_path):
         a = make_sub("a")
@@ -571,13 +636,13 @@ class TestWrite:
         assert a.name in content
         assert str(a.parent) in content
 
-    def test_contains_parent_child_for_connected_nodes(self, make_sub, tmp_path):
+    def test_contains_parent_child_for_connected_nodes(self, make_sub, tmp_path, node_name):
         a = make_sub("a", outputs=["x.txt"])
         b = make_sub("b", inputs=["x.txt"])
         dag_path = tmp_path / "out.dag"
         HTCondorDataFlow(files=[a, b], filename=str(dag_path)).write()
         content = dag_path.read_text()
-        assert "PARENT NODE-0 CHILD NODE-1" in content
+        assert f"PARENT {node_name(a)} CHILD {node_name(b)}" in content
 
     def test_no_parent_child_for_independent_nodes(self, make_sub, tmp_path):
         a = make_sub("a", outputs=["x.txt"])
@@ -588,24 +653,24 @@ class TestWrite:
         assert "PARENT" not in content
         assert "# Node relationships determined by dataflow:" not in content
 
-    def test_write_overwrites_not_appends(self, make_sub, tmp_path):
+    def test_write_overwrites_not_appends(self, make_sub, tmp_path, node_name):
         a = make_sub("a")
         dag_path = tmp_path / "out.dag"
         df = HTCondorDataFlow(files=[a], filename=str(dag_path))
         df.write()
         df.write()
         content = dag_path.read_text()
-        assert content.count("JOB NODE-0") == 1
+        assert content.count(f"JOB {node_name(a)}") == 1
 
-    def test_job_line_uses_absolute_path_for_jdl_elsewhere(self, make_sub, tmp_path):
+    def test_job_line_uses_absolute_path_for_jdl_elsewhere(self, make_sub, tmp_path, node_name):
         a = make_sub("a")
         dag_path = tmp_path / "out.dag"
         HTCondorDataFlow(files=[a], filename=str(dag_path)).write()
         content = dag_path.read_text()
         assert "DIR" not in content
-        assert f"JOB NODE-0 {a.resolve()}" in content
+        assert f"JOB {node_name(a)} {a.resolve()}" in content
 
-    def test_job_line_uses_absolute_path_when_jdl_in_cwd(self, tmp_path):
+    def test_job_line_uses_absolute_path_when_jdl_in_cwd(self, tmp_path, node_name):
         sub = tmp_path / "a.sub"
         sub.write_text("executable = example.sh\nqueue\n")
         dag_path = tmp_path / "out.dag"
@@ -613,9 +678,9 @@ class TestWrite:
             HTCondorDataFlow(files=[sub], filename=str(dag_path)).write()
         content = dag_path.read_text()
         assert "DIR" not in content
-        assert f"JOB NODE-0 {sub.resolve()}" in content
+        assert f"JOB {node_name(sub)} {sub.resolve()}" in content
 
-    def test_job_line_resolves_relative_jdl_path(self, tmp_path):
+    def test_job_line_resolves_relative_jdl_path(self, tmp_path, node_name):
         subdir = tmp_path / "subdir"
         subdir.mkdir()
         sub = subdir / "a.sub"
@@ -625,18 +690,19 @@ class TestWrite:
             HTCondorDataFlow(files=[Path("subdir/a.sub")], filename=str(dag_path)).write()
         content = dag_path.read_text()
         assert "DIR" not in content
-        assert f"JOB NODE-0 {sub.resolve()}" in content
+        # The node is named from the exact (relative) path given, not the resolved one.
+        assert f"JOB {node_name('subdir/a.sub')} {sub.resolve()}" in content
 
-    def test_relative_to_source_adds_dir_clause_for_jdl_elsewhere(self, make_sub, tmp_path):
+    def test_relative_to_source_adds_dir_clause_for_jdl_elsewhere(self, make_sub, tmp_path, node_name):
         a = make_sub("a")
         dag_path = tmp_path / "out.dag"
         config = ExecutionConfig(relative_to_source=True)
         HTCondorDataFlow(files=[a], filename=str(dag_path), config=config).write()
         content = dag_path.read_text()
         assert f"DIR {a.parent}" in content
-        assert f"JOB NODE-0 {a.name} DIR" in content
+        assert f"JOB {node_name(a)} {a.name} DIR" in content
 
-    def test_relative_to_source_no_dir_when_jdl_in_cwd(self, tmp_path):
+    def test_relative_to_source_no_dir_when_jdl_in_cwd(self, tmp_path, node_name):
         sub = tmp_path / "a.sub"
         sub.write_text("executable = example.sh\nqueue\n")
         dag_path = tmp_path / "out.dag"
@@ -645,9 +711,9 @@ class TestWrite:
             HTCondorDataFlow(files=[sub], filename=str(dag_path), config=config).write()
         content = dag_path.read_text()
         assert "DIR" not in content
-        assert "JOB NODE-0 a.sub" in content
+        assert f"JOB {node_name(sub)} a.sub" in content
 
-    def test_resolve_from_no_dir_clause(self, make_sub, tmp_path):
+    def test_resolve_from_no_dir_clause(self, make_sub, tmp_path, node_name):
         """--resolve-from rewrites transfer file entries in-place; it never emits a
         DAGMan DIR clause or changes how the JOB line itself is formed."""
         a = make_sub("a")
@@ -658,9 +724,9 @@ class TestWrite:
         HTCondorDataFlow(files=[a], filename=str(dag_path), config=config).write()
         content = dag_path.read_text()
         assert "DIR" not in content
-        assert f"JOB NODE-0 {a.resolve()}" in content
+        assert f"JOB {node_name(a)} {a.resolve()}" in content
 
-    def test_shared_children_grouped_by_parent_set(self, make_sub, tmp_path):
+    def test_shared_children_grouped_by_parent_set(self, make_sub, tmp_path, node_name):
         p1  = make_sub("p1",  outputs=["x.txt"])
         p2  = make_sub("p2",  outputs=["y.txt"])
         p3  = make_sub("p3",  outputs=["z.txt"])
@@ -675,13 +741,13 @@ class TestWrite:
             filename=str(dag_path),
         ).write()
         content = dag_path.read_text()
-        assert "PARENT NODE-0 NODE-1 NODE-2 CHILD NODE-3 NODE-4" in content
-        assert "PARENT NODE-0 CHILD NODE-5" in content
-        assert "PARENT NODE-1 CHILD NODE-6" in content
-        assert "PARENT NODE-2 CHILD NODE-7" in content
+        assert f"PARENT {node_name(p1)} {node_name(p2)} {node_name(p3)} CHILD {node_name(c1)} {node_name(c2)}" in content
+        assert f"PARENT {node_name(p1)} CHILD {node_name(c10)}" in content
+        assert f"PARENT {node_name(p2)} CHILD {node_name(c20)}" in content
+        assert f"PARENT {node_name(p3)} CHILD {node_name(c30)}" in content
         assert content.count("PARENT") == 4
 
-    def test_distinct_children_written_separately(self, make_sub, tmp_path):
+    def test_distinct_children_written_separately(self, make_sub, tmp_path, node_name):
         a = make_sub("a", outputs=["x.txt"])
         b = make_sub("b", outputs=["y.txt"])
         c = make_sub("c", inputs=["x.txt"])
@@ -690,10 +756,10 @@ class TestWrite:
         HTCondorDataFlow(files=[a, b, c, d], filename=str(dag_path)).write()
         content = dag_path.read_text()
         assert content.count("PARENT") == 2
-        assert "PARENT NODE-0 CHILD NODE-2" in content
-        assert "PARENT NODE-1 CHILD NODE-3" in content
+        assert f"PARENT {node_name(a)} CHILD {node_name(c)}" in content
+        assert f"PARENT {node_name(b)} CHILD {node_name(d)}" in content
 
-    def test_diamond_compresses_to_two_lines(self, make_sub, tmp_path):
+    def test_diamond_compresses_to_two_lines(self, make_sub, tmp_path, node_name):
         a = make_sub("a", outputs=["shared.txt"])
         b = make_sub("b", inputs=["shared.txt"], outputs=["b_out.txt"])
         c = make_sub("c", inputs=["shared.txt"], outputs=["c_out.txt"])
@@ -702,8 +768,8 @@ class TestWrite:
         HTCondorDataFlow(files=[a, b, c, e], filename=str(dag_path)).write()
         content = dag_path.read_text()
         assert content.count("PARENT") == 2
-        assert "PARENT NODE-0 CHILD NODE-1 NODE-2" in content
-        assert "PARENT NODE-1 NODE-2 CHILD NODE-3" in content
+        assert f"PARENT {node_name(a)} CHILD {node_name(b)} {node_name(c)}" in content
+        assert f"PARENT {node_name(b)} {node_name(c)} CHILD {node_name(e)}" in content
 
     def test_parent_child_lines_appear_after_all_job_lines(self, make_sub, tmp_path):
         a = make_sub("a", outputs=["x.txt"])
@@ -1031,7 +1097,7 @@ class TestEndToEndTopologies:
         with ChangeDir(tmp_path):
             yield
 
-    def test_deep_chain_with_branching_at_multiple_levels(self, make_sub, tmp_path):
+    def test_deep_chain_with_branching_at_multiple_levels(self, make_sub, tmp_path, node_name):
         """A -> B -> (C, D) -> E -> (F, G) -> H: two branch/converge stages chained
         together, deeper and wider than any single existing generate()/write() test."""
         a = make_sub("a", outputs=["ab.txt"])
@@ -1061,11 +1127,11 @@ class TestEndToEndTopologies:
         df.write()
         content = dag_path.read_text()
         assert content.count("PARENT") == 5
-        assert "PARENT NODE-0 CHILD NODE-1" in content
-        assert "PARENT NODE-1 CHILD NODE-2 NODE-3" in content
-        assert "PARENT NODE-2 NODE-3 CHILD NODE-4" in content
-        assert "PARENT NODE-4 CHILD NODE-5 NODE-6" in content
-        assert "PARENT NODE-5 NODE-6 CHILD NODE-7" in content
+        assert f"PARENT {node_name(a)} CHILD {node_name(b)}" in content
+        assert f"PARENT {node_name(b)} CHILD {node_name(c)} {node_name(d_)}" in content
+        assert f"PARENT {node_name(c)} {node_name(d_)} CHILD {node_name(e)}" in content
+        assert f"PARENT {node_name(e)} CHILD {node_name(f)} {node_name(g)}" in content
+        assert f"PARENT {node_name(f)} {node_name(g)} CHILD {node_name(h)}" in content
 
     def test_multiple_disconnected_components_no_cross_contamination(self, make_sub):
         """A linear chain and a diamond, entirely unrelated to each other, processed
@@ -1082,12 +1148,12 @@ class TestEndToEndTopologies:
         df = HTCondorDataFlow(files=[a1, b1, a2, b2, c2, d2])
         dag = df.generate()
 
-        # Chain 1 (NODE-0, NODE-1) only relates to itself
+        # Chain 1 (ids 0, 1) only relates to itself
         assert dag[1].id in dag[0].children
         assert dag[1].children is None
         assert dag[0].parents is None
 
-        # Diamond (NODE-2..5) only relates to itself
+        # Diamond (ids 2..5) only relates to itself
         assert dag[3].id in dag[2].children and dag[4].id in dag[2].children
         assert dag[5].id in dag[3].children and dag[5].id in dag[4].children
         assert dag[2].parents is None
@@ -1129,7 +1195,7 @@ class TestEndToEndTopologies:
         assert src == 0
         assert set(deps) == {1, 2, 3, 4, 5}
 
-    def test_isolated_no_transfer_node_inside_larger_graph(self, make_sub, tmp_path):
+    def test_isolated_no_transfer_node_inside_larger_graph(self, make_sub, tmp_path, node_name):
         """A node with no transfer_input_files/transfer_output_files at all, sitting
         alongside an otherwise fully-connected diamond, should never appear in any
         edge, grouping, or PARENT/CHILD line."""
@@ -1155,9 +1221,9 @@ class TestEndToEndTopologies:
         df.filename = str(dag_path)
         df.write()
         content = dag_path.read_text()
-        assert "JOB NODE-0" in content
-        assert "PARENT NODE-0" not in content
-        assert "CHILD NODE-0" not in content
+        assert f"JOB {node_name(isolated)}" in content
+        assert f"PARENT {node_name(isolated)}" not in content
+        assert f"CHILD {node_name(isolated)}" not in content
 
     def test_multiple_job_types_cross_linked(self, make_sub):
         """Three distinct JobTypes coexisting in one graph: a shape-injected root
@@ -1220,7 +1286,7 @@ class TestEndToEndTopologies:
         consumer_content = dag[1].internal.read_text()
         assert f"transfer_input_files = {target / 'shape_out.txt'}" in consumer_content
 
-    def test_job_type_shape_combined_with_relative_to_source(self, make_sub, tmp_path):
+    def test_job_type_shape_combined_with_relative_to_source(self, make_sub, tmp_path, node_name):
         """A shape-injected output edge survives under relative_to_source, and the
         resolved file for the shape-bearing node is written beside its original
         JDL rather than centralized under flowman/."""
@@ -1242,8 +1308,8 @@ class TestEndToEndTopologies:
         content = dag_path.read_text()
         # cwd is isolated to tmp_path (both JDLs' own directory), so no DIR clause
         assert "DIR" not in content
-        assert "JOB NODE-0" in content
-        assert "JOB NODE-1" in content
+        assert f"JOB {node_name(worker_job)}" in content
+        assert f"JOB {node_name(consumer_job)}" in content
 
     def test_url_input_mixed_with_file_based_parents(self, make_sub):
         """A node with both a real file-based parent and a URL-scheme external

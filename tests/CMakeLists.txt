@@ -31,4 +31,5 @@ create_test(test_change_directory.py)
 create_test(test_cli.py)
 create_test(test_execute.py)
 create_test(test_sources.py)
+create_test(test_naming.py)
 

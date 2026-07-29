@@ -64,6 +64,16 @@ This is a shared flag accepted by `convert`, `execute`, and `show` (both the `fi
 
 ---
 
+## Undocumented Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--node-name-length LENGTH` | `16` | Length (hex characters) of the content-addressed node names `HTCondorDataFlow` assigns — see [`docs/dataflow.md`](dataflow.md#node-naming). Must be between `4` and `64`, or the command exits with code **2**. Deliberately suppressed from `--help` output (`argparse.SUPPRESS`) since it's an internal tuning knob, not something most users need to touch. |
+
+Shared by the same commands as `--job-shapes` above.
+
+---
+
 ## Commands
 
 ### `htflow convert [FILE]`

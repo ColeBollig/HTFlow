@@ -82,6 +82,7 @@ Pass `--relative-to-source` to restore the opposite behavior — each JDL's own 
 | [`docs/config.md`](docs/config.md) | `ExecutionConfig` — shared dataflow/execution behavior settings |
 | [`docs/dag.md`](docs/dag.md) | DAG data structure |
 | [`docs/utils/directory.md`](docs/utils/directory.md) | `ChangeDir` context manager |
+| [`docs/utils/naming.md`](docs/utils/naming.md) | `node_name()` — content-addressed DAG node naming |
 
 ---
 

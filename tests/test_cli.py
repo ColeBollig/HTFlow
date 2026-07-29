@@ -64,35 +64,35 @@ class TestConvert:
         run_cli("convert", str(dag), "--jdl", str(a))
         assert dag.exists()
 
-    def test_dag_contains_job_lines(self, make_sub, tmp_path):
+    def test_dag_contains_job_lines(self, make_sub, tmp_path, node_name):
         a = make_sub("a")
         b = make_sub("b")
         dag = tmp_path / "out.dag"
         run_cli("convert", str(dag), "--jdl", str(a), str(b))
         content = dag.read_text()
-        assert "JOB NODE-0" in content
-        assert "JOB NODE-1" in content
+        assert f"JOB {node_name(a)}" in content
+        assert f"JOB {node_name(b)}" in content
 
-    def test_dag_contains_parent_child(self, make_sub, tmp_path):
+    def test_dag_contains_parent_child(self, make_sub, tmp_path, node_name):
         a = make_sub("a", outputs=["link.txt"])
         b = make_sub("b", inputs=["link.txt"])
         dag = tmp_path / "out.dag"
         run_cli("convert", str(dag), "--jdl", str(a), str(b))
-        assert "PARENT NODE-0 CHILD NODE-1" in dag.read_text()
+        assert f"PARENT {node_name(a)} CHILD {node_name(b)}" in dag.read_text()
 
     def test_default_filename(self, make_sub, tmp_path):
         a = make_sub("a")
         run_cli("convert", "--jdl", str(a), cwd=tmp_path)
         assert (tmp_path / "dataflow.dag").exists()
 
-    def test_with_job_shapes(self, make_sub, tmp_path):
+    def test_with_job_shapes(self, make_sub, tmp_path, node_name):
         a = make_sub("a", extra="JobType = worker")
         b = make_sub("b", inputs=["out.txt"])
         shapes_file = tmp_path / "shapes.json"
         shapes_file.write_text(json.dumps({"worker": {"OutputFiles": "out.txt"}}))
         dag = tmp_path / "out.dag"
         run_cli("convert", str(dag), "--jdl", str(a), str(b), "--job-shapes", str(shapes_file), cwd=tmp_path)
-        assert "PARENT NODE-0 CHILD NODE-1" in dag.read_text()
+        assert f"PARENT {node_name(a)} CHILD {node_name(b)}" in dag.read_text()
 
     def test_prints_output_path(self, make_sub, tmp_path, capsys):
         a = make_sub("a")
@@ -100,7 +100,7 @@ class TestConvert:
         run_cli("convert", str(dag), "--jdl", str(a))
         assert str(dag) in capsys.readouterr().out
 
-    def test_diamond_topology_written_correctly(self, make_sub, tmp_path):
+    def test_diamond_topology_written_correctly(self, make_sub, tmp_path, node_name):
         """End-to-end through the actual CLI path (arg parsing -> collect_jdl_files
         -> HTCondorDataFlow -> write()), not just HTCondorDataFlow directly."""
         a = make_sub("a", outputs=["shared.txt"])
@@ -111,8 +111,8 @@ class TestConvert:
         assert run_cli("convert", str(dag), "--jdl", str(a), str(b), str(c), str(e)) == 0
         content = dag.read_text()
         assert content.count("PARENT") == 2
-        assert "PARENT NODE-0 CHILD NODE-1 NODE-2" in content
-        assert "PARENT NODE-1 NODE-2 CHILD NODE-3" in content
+        assert f"PARENT {node_name(a)} CHILD {node_name(b)} {node_name(c)}" in content
+        assert f"PARENT {node_name(b)} {node_name(c)} CHILD {node_name(e)}" in content
 
 
 # ---------------------------------------------------------------------------
@@ -234,16 +234,16 @@ class TestDirInput:
         dag = tmp_path / "out.dag"
         assert run_cli("convert", str(dag), "--jdl", str(a), "--dir", str(d)) == 0
 
-    def test_jdl_flag_repeated(self, make_sub, tmp_path):
+    def test_jdl_flag_repeated(self, make_sub, tmp_path, node_name):
         a = make_sub("a", outputs=["link.txt"])
         b = make_sub("b", inputs=["link.txt"])
         dag = tmp_path / "out.dag"
         code = run_cli("convert", str(dag), "--jdl", str(a), "--jdl", str(b))
         assert code == 0
-        assert "JOB NODE-0" in dag.read_text()
-        assert "JOB NODE-1" in dag.read_text()
+        assert f"JOB {node_name(a)}" in dag.read_text()
+        assert f"JOB {node_name(b)}" in dag.read_text()
 
-    def test_dir_flag_repeated(self, make_sub, tmp_path):
+    def test_dir_flag_repeated(self, make_sub, tmp_path, node_name):
         d1 = tmp_path / "d1"
         d2 = tmp_path / "d2"
         d1.mkdir()
@@ -255,8 +255,8 @@ class TestDirInput:
         dag = tmp_path / "out.dag"
         code = run_cli("convert", str(dag), "--dir", str(d1), "--dir", str(d2))
         assert code == 0
-        assert "JOB NODE-0" in dag.read_text()
-        assert "JOB NODE-1" in dag.read_text()
+        assert f"JOB {node_name(d1 / 'a.sub')}" in dag.read_text()
+        assert f"JOB {node_name(d2 / 'b.sub')}" in dag.read_text()
 
 
 class TestErrorHandling:

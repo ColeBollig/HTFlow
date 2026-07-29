@@ -24,6 +24,7 @@ from htflow.dataflow import HTCondorDataFlow, AssumptionError
 from htflow.config import ExecutionConfig
 from htflow.sources import collect_jdl_files, InputError
 from htflow.exit_codes import EXIT_SETUP_FAILURE
+from htflow.utils.naming import DEFAULT_NODE_NAME_LENGTH, validate_node_name_length
 from htflow import commands
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,15 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
         metavar="PATH",
         help="Path to JSON file containing special job type shapes",
     )
+    common_parser.add_argument(
+        "--node-name-length",
+        dest="node_name_length",
+        action="store",
+        type=int,
+        default=DEFAULT_NODE_NAME_LENGTH,
+        metavar="LENGTH",
+        help=argparse.SUPPRESS,
+    )
     path_resolution = common_parser.add_mutually_exclusive_group()
     path_resolution.add_argument(
         "--relative-to-source",
@@ -168,6 +178,12 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
             parser.error(f"--resolve-from is not a directory: {args.resolve_from}")
         args.resolve_from = resolve_from
 
+    if hasattr(args, "node_name_length"):
+        try:
+            validate_node_name_length(args.node_name_length)
+        except ValueError as e:
+            parser.error(f"--node-name-length: {e}")
+
     if args.command not in commands.CMD_TO_FUNCTION:
         parser.print_help()
         sys.exit(EXIT_SETUP_FAILURE)
@@ -194,7 +210,11 @@ def main() -> None:
             action(args)
             return
 
-        config = ExecutionConfig(relative_to_source=args.relative_to_source, resolve_from=args.resolve_from)
+        config = ExecutionConfig(
+            relative_to_source=args.relative_to_source,
+            resolve_from=args.resolve_from,
+            node_name_length=args.node_name_length,
+        )
         df = HTCondorDataFlow(files=args.jdl, config=config)
         if args.job_shapes:
             with open(args.job_shapes, "r") as f:

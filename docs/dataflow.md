@@ -73,7 +73,7 @@ HTCondorDataFlow(
 | `shapes`     | `Dict[str, Dict[str, str]]`                                      | Job type shape definitions (also settable)                     |
 | `config`     | `ExecutionConfig`                                                 | Shared static configuration controlling dataflow/execution behavior (read-only) |
 | `types`      | `Set[str]`                                                       | Set of distinct `JobType` values found across all JDL files    |
-| `dag`        | `Optional[dag.Dag]`                                              | The internal DAG, populated after calling `generate()`         |
+| `dag`        | `Optional[dag.Dag]`                                              | The internal DAG, populated after calling `generate()`. Each node's `name` is a content-addressed hash (16 hex characters by default) — see [Node naming](#node-naming) — and `dag.internal` holds the resulting `Dict[str, int]` of hashed name → node `id`. |
 | `mapping`    | `Dict[Union[Path, str], Tuple[Optional[int], Optional[List[int]]]]` | Maps each file to `(source_node_id, [dependent_node_ids])`. Local files are keyed by `Path`; URL-scheme files (`osdf://`, `pelican://`) are keyed by their original string. |
 | `groupings`  | `Tuple[List[Path], List[Path], List[Path]]`                      | Files grouped as `(roots, intermediate, leafs)` — see below    |
 
@@ -93,6 +93,23 @@ Parses all JDL files, builds the dependency graph, checks for cycles, and return
 
 ```python
 dag = HTCondorDataFlow(files=["a.sub", "b.sub"]).generate()
+```
+
+##### Node naming
+
+Each node's `name` is produced by [`htflow.utils.naming.node_name()`](utils/naming.md): the SHA-256 hex digest of the exact JDL path passed to `files=[...]` (as `str(Path(...))`, before any `--relative-to-source`/`--resolve-from` rewriting), truncated to `config.node_name_length` hex characters — not a sequential `NODE-<i>` label. This makes node names content-addressed and deterministic: the same path always hashes to the same node name across separate `generate()`/`write()` calls, which is what appears in the `JOB`/`PARENT`/`CHILD` lines of a written DAG file (see [Example](#example) below). A node's *name* depends only on its own path, never on the order of `files=[...]` — see [Ordering](utils/naming.md#ordering) for how that interacts with node *ids*, which are order-dependent.
+
+`node_name_length` defaults to `16` (of a possible `4`–`64`; see [`docs/config.md`](config.md#executionconfig)) — long enough that a collision between distinct JDL paths is vanishingly unlikely, while keeping `JOB`/`PARENT`/`CHILD` lines in a written `.dag` file readable. If two distinct paths ever did truncate to the same name, `Dag.AddNode()` raises `RuntimeError` rather than silently merging the nodes.
+
+After `generate()`/`write()` runs, `dag.internal` holds a `Dict[str, int]` mapping each node's hashed name back to its integer node `id`.
+
+```python
+>>> df = HTCondorDataFlow(files=["/abs/path/to/fetch.sub"])
+>>> d = df.generate()
+>>> d[0].name
+'5b12f19236ac40e2'
+>>> d.internal
+{'5b12f19236ac40e2': 0}
 ```
 
 #### `write() → Path`
@@ -160,18 +177,18 @@ df = HTCondorDataFlow(
 df.write()
 ```
 
-`pipeline.dag` output (with the default `relative_to_source=False`, `JOB` lines always show each submit file's absolute path — see [`write()`](#write--path)):
+`pipeline.dag` output (with the default `relative_to_source=False`, `JOB` lines always show each submit file's absolute path — see [`write()`](#write--path)). Each `JOB` name is the (default 16-character) SHA-256 hex digest of its JDL path — see [Node naming](#node-naming) above:
 
 ```
 # Automatically written HTCondor DAG file from Dataflow
 # Generated: ...
-JOB NODE-0 /abs/path/to/fetch.sub
-JOB NODE-1 /abs/path/to/process.sub
-JOB NODE-2 /abs/path/to/report.sub
+JOB 5b12f19236ac40e2 /abs/path/to/fetch.sub
+JOB 61df75f00a41410c /abs/path/to/process.sub
+JOB e3b64db3089fe61d /abs/path/to/report.sub
 
 # Node relationships determined by dataflow:
-PARENT NODE-0 CHILD NODE-1
-PARENT NODE-1 CHILD NODE-2
+PARENT 5b12f19236ac40e2 CHILD 61df75f00a41410c
+PARENT 61df75f00a41410c CHILD e3b64db3089fe61d
 ```
 
 ---
@@ -229,7 +246,7 @@ df = HTCondorDataFlow(
 df.write()
 ```
 
-This produces the same `PARENT NODE-0 CHILD NODE-1` / `PARENT NODE-1 CHILD NODE-2` DAG as if `fetch.sub` had `transfer_output_files = raw.csv` written explicitly.
+This produces the same `PARENT <fetch-hash> CHILD <process-hash>` / `PARENT <process-hash> CHILD <report-hash>` DAG (node names are the SHA-256 hex digests described in [Node naming](#node-naming)) as if `fetch.sub` had `transfer_output_files = raw.csv` written explicitly.
 
 ---
 
