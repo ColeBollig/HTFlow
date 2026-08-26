@@ -22,6 +22,7 @@ import sys
 import time
 import signal
 import logging
+import threading
 import pytest
 from pathlib import Path
 from contextlib import contextmanager
@@ -115,7 +116,16 @@ def make_condor_jdl(tmp_path, task_script):
     on the submit machine (no matchmaking/startd needed), and each job gets
     its own private `log` -- proving MonitorEngine's shared `dagman_log`
     (see htflow/engines/monitor.py) *adds* to it rather than replacing it."""
-    def _make(name, task_id, *, exit_code=0, inputs=None, outputs=None, log="exec.log"):
+    def _make(name, task_id, *, exit_code=0, inputs=None, outputs=None, log="exec.log", count=None):
+        # count materializes a real HTCondor job factory rather than a single
+        # proc. A plain fixed `queue N` does NOT set one up (no
+        # ATTR_JOB_MATERIALIZE_DIGEST_FILE), so it would never produce the
+        # CLUSTER_SUBMIT/CLUSTER_REMOVE events MonitorEngine's factory-node
+        # handling depends on -- max_materialize is what actually triggers it
+        # (SubmitHash::want_factory_submit(), submit_utils.cpp), no itemdata
+        # needed. $(Process) is each proc's 0-based index within the cluster;
+        # exit_code may itself be "$(Process)" to vary per proc.
+        proc_id = "$(Process)" if count else str(task_id)
         lines = [
             "universe = local",
             # HTCondor does not do a shell-style $PATH lookup for `executable` --
@@ -123,7 +133,7 @@ def make_condor_jdl(tmp_path, task_script):
             # with ENOENT there), not searched on $PATH. Use the exact
             # interpreter running this test suite instead.
             f"executable = {sys.executable}",
-            f"arguments = {str(task_script)} --id {task_id} --log {log} --exit-code {exit_code}",
+            f"arguments = {str(task_script)} --id {proc_id} --log {log} --exit-code {exit_code}",
             f"log = {name}.private.log",
             f"output = {name}.out",
             f"error = {name}.err",
@@ -134,11 +144,13 @@ def make_condor_jdl(tmp_path, task_script):
             # get silently auto-removed by the engine.
             "periodic_remove = JobStatus == 5",
         ]
+        if count:
+            lines.append(f"max_materialize = {count}")
         if inputs:
             lines.append(f"transfer_input_files = {','.join(inputs)}")
         if outputs:
             lines.append(f"transfer_output_files = {','.join(outputs)}")
-        lines.append("queue")
+        lines.append(f"queue {count}" if count else "queue")
         p = tmp_path / f"{name}.sub"
         p.write_text("\n".join(lines) + "\n")
         return p
@@ -253,3 +265,117 @@ class TestMonitorLinear:
         c = make_condor_jdl("c", task_id=3, inputs=["b.dne"])
         assert run_monitor("--jdl", str(a), str(b), str(c), log_file=htflow_log) == 1
         assert exec_order(exec_log) == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# Factory / late-materialization nodes (max_materialize)
+#
+# A node backed by a real HTCondor job factory takes a different completion
+# path in monitor.py than a single-proc node: CLUSTER_SUBMIT (not a plain
+# SUBMIT) marks node.internal.factory = True, and _check_node_done() then
+# refuses to consider the node done until CLUSTER_REMOVE arrives, regardless
+# of how many procs have already individually terminated. None of that code
+# was previously exercised by any test.
+# ---------------------------------------------------------------------------
+
+class TestMonitorFactory:
+    def test_all_procs_success(self, make_condor_jdl, htflow_log, exec_log):
+        a = make_condor_jdl("a", task_id=0, count=3)
+        assert run_monitor("--jdl", str(a), log_file=htflow_log) == 0
+        assert sorted(exec_order(exec_log)) == [0, 1, 2]
+
+    def test_one_proc_fails(self, make_condor_jdl, htflow_log, exec_log):
+        """proc 0 exits 0, procs 1 and 2 exit nonzero (exit_code == $(Process))
+        -- the node, and the whole run, must FAIL only once every proc has
+        reported in, not on the first failure."""
+        a = make_condor_jdl("a", task_id=0, count=3, exit_code="$(Process)")
+        assert run_monitor("--jdl", str(a), log_file=htflow_log) == 1
+        assert sorted(exec_order(exec_log)) == [0, 1, 2]
+
+
+# ---------------------------------------------------------------------------
+# Recovery: resume from a real, prior shared job event log
+#
+# Unlike ManualEngine (a hand-rolled flowman/manual.state text format),
+# MonitorEngine.Recover() replays flowman/dataflow.shared.log -- the actual
+# HTCondor event log -- through the same event handling Update() uses. That
+# in_recovery=True code path (handle set from event.cluster rather than a
+# SubmitResult) had no coverage at all before this test.
+# ---------------------------------------------------------------------------
+
+class TestMonitorRecover:
+    def test_completed_run_recovers_without_resubmitting(self, make_condor_jdl, tmp_path, exec_log):
+        a = make_condor_jdl("a", task_id=1)
+
+        first_log = tmp_path / "run1.log"
+        assert run_monitor("--jdl", str(a), log_file=first_log) == 0
+        first_order = exec_order(exec_log)
+        assert first_order == [1]
+
+        # Same cwd/flowman dir (same tmp_path -> same batch name -> same
+        # flowman/dataflow.shared.log), same JDL -- a second invocation must
+        # recover the node as already-SUCCESS from the real event log and
+        # exit immediately, without submitting (or running) anything again.
+        second_log = tmp_path / "run2.log"
+        assert run_monitor("--jdl", str(a), log_file=second_log) == 0
+        assert exec_order(exec_log) == first_order  # unchanged: no re-run
+
+        recovery_output = second_log.read_text()
+        assert "[RECOVERY]" in recovery_output
+        assert "SUBMIT" in recovery_output or "JOB_TERMINATED" in recovery_output
+
+
+# ---------------------------------------------------------------------------
+# A job that goes on hold
+#
+# monitor.py's __process_log_events() does not handle JOB_HELD at all (see
+# its "Known limitation" docs) -- a held job is otherwise invisible to it and
+# would hang Terminate() forever. make_condor_jdl's periodic_remove =
+# JobStatus == 5 is meant to convert a hold into a JOB_ABORTED event instead,
+# which *is* handled. This test doesn't wait for HTCondor's own periodic
+# evaluation cycle to fire (its interval isn't something this test controls,
+# and waiting it out would make this one test disproportionately slow) --
+# instead it forces the same real-world outcome (a held job getting removed)
+# as soon as the hold is observed, from a background thread. run_monitor()
+# itself still runs on the main thread, since its watchdog uses
+# signal.alarm(), which only works on the interpreter's main thread.
+# ---------------------------------------------------------------------------
+
+class TestMonitorHeldJob:
+    def test_held_job_resolves_as_failure(self, tmp_path, condor_schedd):
+        jdl = tmp_path / "bad.sub"
+        jdl.write_text(
+            "universe = local\n"
+            # Deliberately unexecutable -- HTCondor holds this almost
+            # immediately (it can't even start the process), independent of
+            # task.py's own logic.
+            "executable = /nonexistent/not-a-real-executable\n"
+            "log = bad.private.log\n"
+            "output = bad.out\n"
+            "error = bad.err\n"
+            "periodic_remove = JobStatus == 5\n"
+            "queue\n"
+        )
+
+        batch_name = hash_name(tmp_path.resolve())
+
+        def _remove_once_held():
+            deadline = time.time() + (WATCHDOG_SECONDS - 15)
+            while time.time() < deadline:
+                ads = condor_schedd.query(
+                    constraint=f'JobBatchName == "{batch_name}"',
+                    projection=["ClusterId", "JobStatus"],
+                )
+                held = [ad for ad in ads if ad.get("JobStatus") == 5]
+                if held:
+                    condor_schedd.act(htcondor2.JobAction.Remove, f'ClusterId == {held[0]["ClusterId"]}')
+                    return
+                time.sleep(1)
+
+        watcher = threading.Thread(target=_remove_once_held, daemon=True)
+        watcher.start()
+
+        htflow_log = tmp_path / "htflow.log"
+        assert run_monitor("--jdl", str(jdl), log_file=htflow_log) == 1
+
+        watcher.join(timeout=5)
