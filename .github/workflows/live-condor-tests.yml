@@ -1,4 +1,4 @@
-name: Monitor Engine Tests
+name: Live Condor Tests
 
 on:
   push:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  test-monitor-engine:
-    name: test_monitor.py against a real minicondor (EL10)
+  live-condor-tests:
+    name: live_condor-marked tests against a real minicondor (EL10)
     runs-on: ubuntu-latest
     container: almalinux:10
 
@@ -29,7 +29,8 @@ jobs:
       # -- no separate pip install needed. Running as root in a container
       # with no systemd, the script detects that itself and starts HTCondor
       # by backgrounding `condor_master` directly instead of going through
-      # systemctl.
+      # systemctl -- which means the daemons end up running as root too,
+      # since there's no systemd unit to say `User=condor`.
       - name: Install and start minicondor
         run: curl -fsSL https://get.htcondor.org | /bin/bash -s -- --no-dry-run
 
@@ -57,11 +58,25 @@ jobs:
           tail -n 200 "${log_dir}/SchedLog" 2>&1 || true
           exit 1
 
+      # HTCondor's schedd refuses to create a submitter UserRec for the
+      # literal identity "condor" -- it's reserved for the daemons
+      # themselves (see MakeUserRec() in condor_schedd.V6/qmgmt.cpp). Since
+      # the daemons above ended up running as root (no systemd), submitting
+      # jobs as root too gets mapped onto that reserved "condor" identity by
+      # the schedd's own personal-condor logic and hard-rejected:
+      #   "Failed to create new User record for condor@<host>."
+      # so jobs must be submitted as a distinct, real, unprivileged user.
+      - name: Create an unprivileged user to submit jobs as
+        run: |
+          useradd -m submituser
+          chown -R submituser:submituser "${GITHUB_WORKSPACE}"
+
       # HTFLOW_REQUIRE_CONDOR=1 turns "no reachable Schedd" from a skip into
       # a hard failure (see tests/conftest.py's condor_schedd fixture) -- so
-      # this step can only pass if test_monitor.py's tests actually ran
-      # against the minicondor above, never by silently skipping them.
-      - name: Run monitor engine tests (must not skip)
-        env:
-          HTFLOW_REQUIRE_CONDOR: "1"
-        run: python3 -m pytest tests/test_monitor.py -v -ra
+      # this step can only pass if these tests actually ran against the
+      # minicondor above, never by silently skipping them. Selecting by the
+      # live_condor marker (auto-applied to any test using condor_schedd)
+      # rather than by filename means a future test file gated on a live
+      # Schedd gets picked up here automatically, with no workflow edit.
+      - name: Run live-Schedd tests as submituser (must not skip)
+        run: su submituser -c "cd '${GITHUB_WORKSPACE}' && HTFLOW_REQUIRE_CONDOR=1 python3 -m pytest -m live_condor -v -ra"

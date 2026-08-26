@@ -25,3 +25,6 @@ pythonpath = ["."]
 # -ra: always show a short summary of skip/xfail reasons at the end of the
 # run, even without -v -- so a skipped HTCondor-Schedd test is never buried.
 addopts = "-ra"
+markers = [
+    "live_condor: requires a live, reachable HTCondor Schedd. Auto-applied by tests/conftest.py's pytest_collection_modifyitems to any test that uses the condor_schedd fixture -- select with `pytest -m live_condor` / exclude with `pytest -m 'not live_condor'`.",
+]

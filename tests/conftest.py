@@ -141,6 +141,17 @@ def condor_schedd():
     return htcondor2.Schedd()
 
 
+def pytest_collection_modifyitems(config, items):
+    """Auto-tag every test that uses condor_schedd (directly, or transitively
+    via another fixture that depends on it) with the `live_condor` marker --
+    so future test files get labeled for free just by using the fixture,
+    without anyone having to remember to add the marker by hand. Select these
+    tests with `pytest -m live_condor`, or exclude them with `-m "not live_condor"`."""
+    for item in items:
+        if "condor_schedd" in getattr(item, "fixturenames", ()):
+            item.add_marker(pytest.mark.live_condor)
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Print a loud, hard-to-miss banner if any HTCondor-Schedd-gated test was
     skipped -- visible in every plain `pytest` run, not just -v/-ra ones."""

@@ -71,7 +71,7 @@ pytest test_change_directory.py -v
 
 ### `test_monitor.py` (requires a live HTCondor Schedd)
 
-`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. If no Schedd is found it **skips** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead. `.github/workflows/monitor-engine.yml` does exactly this: it installs and starts a real `minicondor` on AlmaLinux 10, then runs with the env var set so a broken/missing Schedd fails CI instead of silently skipping the tests:
+`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. If no Schedd is found it **skips** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead. `.github/workflows/live-condor-tests.yml` does exactly this: it installs and starts a real `minicondor` on AlmaLinux 10, then runs with the env var set so a broken/missing Schedd fails CI instead of silently skipping the tests:
 
 ```sh
 HTFLOW_REQUIRE_CONDOR=1 pytest tests/test_monitor.py -q
@@ -87,3 +87,14 @@ pytest -n auto tests/test_monitor.py -q
 Each test uses its own isolated `tmp_path` (own `flowman/` lock directory, own batch name), so they don't collide when run concurrently against the same Schedd.
 
 If individual runs still feel slow, `pytest -v --durations=0 tests/test_monitor.py` prints a per-test timing breakdown, which is the fastest way to see whether the cost is spread evenly or concentrated in specific tests.
+
+#### The `live_condor` marker
+
+Any test that uses the `condor_schedd` fixture (directly, or transitively through another fixture that depends on it) is automatically tagged `live_condor` by a `pytest_collection_modifyitems` hook in `conftest.py` -- no need to remember to mark a new test by hand, just use the fixture. This is what a future test file gated on a live Schedd needs to do to be picked up the same way `test_monitor.py` is, including by CI (`.github/workflows/live-condor-tests.yml` selects tests by this marker, not by filename).
+
+Select or exclude by marker directly:
+
+```sh
+pytest -m live_condor            # only the live-Schedd tests
+pytest -m "not live_condor"      # everything except them (works with no HTCondor installed at all)
+```
