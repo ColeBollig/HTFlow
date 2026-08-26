@@ -1,6 +1,6 @@
 # `htflow.config` — ExecutionConfig
 
-`ExecutionConfig` is shared, static configuration that controls the behavior of a dataflow and its execution — not a container specifically for path handling. A single instance is built once (typically from CLI arguments) and passed to `HTCondorDataFlow`, `Engine` subclasses (e.g. `ManualEngine`), and their nodes, so new behavior-controlling options can be added here instead of threading new parameters through every constructor.
+`ExecutionConfig` is shared, static configuration that controls the behavior of a dataflow and its execution — not a container specifically for path handling. A single instance is built once (typically from CLI arguments) and passed to `HTCondorDataFlow`, `Engine` subclasses (e.g. `ManualEngine`, `MonitorEngine`), and their nodes, so new behavior-controlling options can be added here instead of threading new parameters through every constructor.
 
 ---
 
@@ -20,7 +20,7 @@ ExecutionConfig(
 |----------------------|-------------------|-------------------------------------------------------------------------------|
 | `relative_to_source` | `bool`            | When `True`, relative paths in a submit file resolve against that submit file's own directory instead of the current working directory. See below for what this means per consumer. Defaults to `False`. |
 | `resolve_from`        | `Optional[Path]` | When set, relative entries in a submit file's `transfer_input_files`/`transfer_output_files` are rewritten to absolute paths anchored at this directory. Mutually exclusive with `relative_to_source`. Defaults to `None`. |
-| `node_name_length`    | `int`            | Length (in hex characters) of the SHA-256-derived node names `HTCondorDataFlow` assigns — see [`docs/dataflow.md`](dataflow.md#node-naming). Must be between `4` and `64` inclusive (`htflow.utils.naming.MIN_NODE_NAME_LENGTH`/`MAX_NODE_NAME_LENGTH`); the constructor raises `ValueError` otherwise. Defaults to `16`. Exposed on the CLI as `--node-name-length`, an intentionally undocumented/hidden flag (suppressed from `--help`) — see [`docs/cli.md`](cli.md). |
+| `node_name_length`    | `int`            | Length (in hex characters) of the SHA-256-derived node names `HTCondorDataFlow` assigns — see [`docs/dataflow.md`](dataflow.md#node-naming). Must be between `4` and `64` inclusive (`htflow.utils.naming.MIN_HASH_LENGTH`/`MAX_HASH_LENGTH`); the constructor raises `ValueError` otherwise. Defaults to `16`. Exposed on the CLI as `--node-name-length`, an intentionally undocumented/hidden flag (suppressed from `--help`) — see [`docs/cli.md`](cli.md). |
 
 `ExecutionConfig` is a frozen `dataclass` — instances are immutable once created. Its `__post_init__` validates `node_name_length` at construction time; the other fields are unvalidated here (the CLI enforces their constraints itself — e.g. `--resolve-from` must be an absolute, existing directory).
 

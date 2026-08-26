@@ -104,11 +104,12 @@ Execute the dataflow using the specified engine.
 ```
 htflow execute manual --jdl a.sub b.sub [--interval SECONDS]
 htflow execute manual --dir ./jobs/
+htflow execute monitor --jdl a.sub b.sub [--interval SECONDS]
 ```
 
 | Argument | Description |
 |---|---|
-| `ENGINE` | Engine to use — currently only `manual` |
+| `ENGINE` | Engine to use — `manual` (local subprocesses) or `monitor` (submits to a local HTCondor Schedd and watches it) — see [`docs/engines.md`](engines.md) |
 | `--interval SECONDS` | Polling interval in seconds (default: `1.0`) |
 
 Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) flag.
@@ -117,9 +118,9 @@ By default, each task runs with HTFlow's own current working directory; pass `--
 
 The engine acquires an exclusive lock on `flowman/flowman.lock` before starting. If another engine is already running (lock held), the command exits immediately with code **75**.
 
-On `SIGINT` or `SIGTERM`, running subprocesses are killed and the lock is released before exit.
+On `SIGINT` or `SIGTERM`, the lock is released before exit — `manual` kills its running subprocesses first; `monitor` removes its submitted jobs from the schedd first.
 
-State is written to `flowman/manual.state` as nodes complete, allowing a future run to resume from where the interrupted run left off.
+`manual` writes state to `flowman/manual.state` as nodes complete, allowing a future run to resume from where the interrupted run left off. `monitor` instead watches (and, on restart, replays) the real HTCondor job event log at `flowman/dataflow.shared.log` — every job it submits writes there in addition to whatever `log` its own JDL sets.
 
 ---
 

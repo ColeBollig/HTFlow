@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import re
 import sys
 import shutil
@@ -26,8 +27,10 @@ from htflow.utils.naming import hash_name
 try:
     import htcondor2
     _HTCONDOR2_SOURCE = f"REAL package ({htcondor2.__file__})"
+    _HTCONDOR2_IS_REAL = True
 except ImportError:
     from unittest.mock import MagicMock
+    _HTCONDOR2_IS_REAL = False
 
     class _Submit:
         """Minimal stand-in for htcondor2.Submit that parses key=value pairs."""
@@ -61,11 +64,103 @@ except ImportError:
     sys.modules["htcondor2"] = _mock
     _HTCONDOR2_SOURCE = "MOCK stub (real htcondor2 package not installed)"
 
+# Bind the module-level name in both branches above (the mock is only
+# registered into sys.modules, not this module's namespace).
+import htcondor2
+
 
 def pytest_report_header(config):
     """Print whether tests are running against the real htcondor2 bindings
     or the fallback mock, so this is obvious in any pytest run's output."""
     return f"htcondor2 bindings: {_HTCONDOR2_SOURCE}"
+
+
+# ---------------------------------------------------------------------------
+# HTCondor Schedd availability -- gates tests/test_monitor.py
+# ---------------------------------------------------------------------------
+#
+# Set HTFLOW_REQUIRE_CONDOR=1 (or true/yes/on) to turn "no Schedd found" into
+# a hard FAILURE instead of a SKIP. Local development defaults to skipping so
+# the suite still runs without HTCondor installed; CI sets the env var so a
+# missing Schedd can never silently skip these tests instead of running them.
+HTFLOW_REQUIRE_CONDOR = os.environ.get("HTFLOW_REQUIRE_CONDOR", "").strip().lower() in ("1", "true", "yes", "on")
+
+# Fixed, grep-able marker embedded in every Schedd-related skip reason, so it's
+# unambiguous (in output, and to the pytest_terminal_summary hook below) which
+# skips are "no HTCondor here" versus anything else.
+CONDOR_SKIP_MARKER = "HTCONDOR-SKIP"
+
+_condor_schedd_probed = False
+_condor_schedd_result = (False, "not probed yet")
+
+
+def _probe_condor_schedd():
+    """Check once per test session whether a live, reachable HTCondor Schedd
+    exists on localhost. Cached after the first call. Returns (available, detail)."""
+    global _condor_schedd_probed, _condor_schedd_result
+    if _condor_schedd_probed:
+        return _condor_schedd_result
+
+    _condor_schedd_probed = True
+
+    if not _HTCONDOR2_IS_REAL:
+        _condor_schedd_result = (False, "htcondor2 is not installed (using the mock stub)")
+        return _condor_schedd_result
+
+    try:
+        schedd = htcondor2.Schedd()
+        # constraint="false" matches nothing, so this is cheap regardless of
+        # queue size -- but it still forces a real round trip to the daemon,
+        # which is exactly what proves it's alive and reachable.
+        schedd.query(constraint="false", limit=0)
+    except Exception as e:
+        _condor_schedd_result = (False, f"{type(e).__name__}: {e}")
+    else:
+        _condor_schedd_result = (True, None)
+
+    return _condor_schedd_result
+
+
+@pytest.fixture
+def condor_schedd():
+    """Require a live, reachable HTCondor Schedd on localhost; returns the
+    connected htcondor2.Schedd().
+
+    By default, a test using this fixture is SKIPPED when no Schedd is found
+    (so the suite still runs on a machine without HTCondor). Set
+    HTFLOW_REQUIRE_CONDOR=1 to make a missing Schedd a hard FAILURE instead --
+    this is what CI uses to assert these tests actually ran.
+    """
+    available, detail = _probe_condor_schedd()
+    if not available:
+        reason = f"{CONDOR_SKIP_MARKER}: no reachable HTCondor Schedd found ({detail})"
+        if HTFLOW_REQUIRE_CONDOR:
+            pytest.fail(f"{reason} -- HTFLOW_REQUIRE_CONDOR is set, treating this as a failure")
+        pytest.skip(reason)
+
+    return htcondor2.Schedd()
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Print a loud, hard-to-miss banner if any HTCondor-Schedd-gated test was
+    skipped -- visible in every plain `pytest` run, not just -v/-ra ones."""
+    skipped = terminalreporter.stats.get("skipped", [])
+    condor_skips = [r for r in skipped if CONDOR_SKIP_MARKER in str(getattr(r, "longrepr", ""))]
+
+    if not condor_skips:
+        return
+
+    terminalreporter.write_sep("=", "HTCondor Schedd tests SKIPPED", red=True, bold=True)
+    terminalreporter.write_line(
+        f"{len(condor_skips)} test(s) requiring a live HTCondor Schedd were SKIPPED "
+        f"-- no reachable Schedd was found on this host.",
+        red=True, bold=True,
+    )
+    terminalreporter.write_line(
+        "Set HTFLOW_REQUIRE_CONDOR=1 to make this a hard FAILURE instead of a skip "
+        "(this is what CI uses to guarantee these tests actually run)."
+    )
+    terminalreporter.write_sep("=", red=True, bold=True)
 
 
 @pytest.fixture

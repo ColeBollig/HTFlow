@@ -13,11 +13,11 @@
 # limitations under the License.
 
 from .engine import Engine
-from ._internal import NodeState, NodeInternal
+from ._internal import NodeState, NodeInternal, DagInternal
 from ..config import ExecutionConfig
 from ..utils.directory import ChangeDir
 from .. import dag
-from typing import Set, Optional
+from typing import Optional
 from pathlib import Path
 from time import time as now
 import subprocess
@@ -38,7 +38,7 @@ class ManualNode(NodeInternal):
     def process(self) -> Optional[subprocess.Popen]:
         return self._proc
 
-    def Execute(self) -> None:
+    def Execute(self, **kwargs) -> None:
         with open(self._jdl, "r") as f:
             desc = htcondor2.Submit(f.read())
 
@@ -59,33 +59,14 @@ class ManualNode(NodeInternal):
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
             )
+
         self.state = NodeState.ACTIVE
 
 
-class ManualDag():
-    def __init__(self) -> None:
-        self._ready_nodes = set()
-        self._active_nodes = set()
-
-    def __repr__(self) -> str:
-        return self.__class__.__name__
-
-    @property
-    def ready_nodes(self) -> Set[int]:
-        return self._ready_nodes
-
-    def prepare(self, node: dag.Node) -> None:
-        if not isinstance(node, dag.Node):
-            raise ValueError("Ready nodes can only be added to from a dag.Node")
-
-        logger.info("Readying node %s for execution", node.internal.jdl)
-
-        self._ready_nodes.add(node.id)
+class ManualDag(DagInternal):
+    def _prepare(self, node: dag.Node) -> None:
+        """Internal specific node preparations"""
         node.internal.state = NodeState.READY
-
-    @property
-    def active_nodes(self) -> Set[int]:
-        return self._active_nodes
 
 
 class ManualEngine(Engine):

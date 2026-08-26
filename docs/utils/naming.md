@@ -1,36 +1,36 @@
-# `htflow.utils.naming` — Node naming
+# `htflow.utils.naming` — Content-addressed naming
 
-Shared, content-addressed node-naming helper: hashes a JDL path into a short, deterministic DAG node name. Used by `HTCondorDataFlow` (see [`docs/dataflow.md`](../dataflow.md#node-naming)) and by the test suite, so both derive node names from a single implementation instead of duplicating the hashing logic.
+Shared, content-addressed naming helper: hashes a path into a short, deterministic name. Used by `HTCondorDataFlow` for DAG node names (see [`docs/dataflow.md`](../dataflow.md#node-naming)), by `htflow.engines.monitor.MonitorEngine` for its default HTCondor batch name, and by the test suite — all derive names from a single implementation instead of duplicating the hashing logic.
 
 ---
 
 ## Constants
 
-| Name                     | Value | Description                                                        |
-|--------------------------|-------|----------------------------------------------------------------------|
-| `MIN_NODE_NAME_LENGTH`   | `4`   | Shortest allowed node name length, in hex characters                |
-| `MAX_NODE_NAME_LENGTH`   | `64`  | Longest allowed node name length — the full SHA-256 hex digest       |
-| `DEFAULT_NODE_NAME_LENGTH` | `16`  | Default used by `node_name()` and `ExecutionConfig.node_name_length` |
+| Name                  | Value | Description                                                        |
+|------------------------|-------|----------------------------------------------------------------------|
+| `MIN_HASH_LENGTH`      | `4`   | Shortest allowed hash length, in hex characters                     |
+| `MAX_HASH_LENGTH`      | `64`  | Longest allowed hash length — the full SHA-256 hex digest            |
+| `DEFAULT_HASH_LENGTH`  | `16`  | Default used by `hash_name()` and `ExecutionConfig.node_name_length` |
 
 ---
 
-## `node_name(path: Union[Path, str], length: int = DEFAULT_NODE_NAME_LENGTH) → str`
+## `hash_name(path: Union[Path, str], length: int = DEFAULT_HASH_LENGTH) → str`
 
 Returns the SHA-256 hex digest of `str(Path(path))`, truncated to `length` hex characters.
 
 - **Content-addressed and deterministic** — the same `path` (as a string, once wrapped in `Path`) always produces the same name, whether hashed once or a thousand times, in this process or a future one. Different paths produce different names for all practical purposes; a truncated-name collision between two genuinely different paths is possible in principle (shorter `length` values make this more likely) but is not silently tolerated — see [Collisions](#collisions) below.
-- **Exact-path sensitive** — `node_name("a.sub")` and `node_name("/abs/path/a.sub")` differ, even if both resolve to the same file on disk, because the path string is hashed as given, not resolved first. `HTCondorDataFlow` relies on this: it hashes each entry in `files=[...]` exactly as passed, before any `--relative-to-source`/`--resolve-from` rewriting.
-- **`Path`/`str` equivalent** — `node_name(Path("a.sub")) == node_name("a.sub")`, since both are normalized through `Path(path)` before hashing.
+- **Exact-path sensitive** — `hash_name("a.sub")` and `hash_name("/abs/path/a.sub")` differ, even if both resolve to the same file on disk, because the path string is hashed as given, not resolved first. `HTCondorDataFlow` relies on this: it hashes each entry in `files=[...]` exactly as passed, before any `--relative-to-source`/`--resolve-from` rewriting.
+- **`Path`/`str` equivalent** — `hash_name(Path("a.sub")) == hash_name("a.sub")`, since both are normalized through `Path(path)` before hashing.
 
 ```python
-from htflow.utils.naming import node_name
+from htflow.utils.naming import hash_name
 
-node_name("/abs/path/to/fetch.sub")            # '5b12f19236ac40e2' (16 hex chars, the default)
-node_name("/abs/path/to/fetch.sub", length=64)  # full 64-character digest
-node_name("/abs/path/to/fetch.sub", length=4)   # '5b12'
+hash_name("/abs/path/to/fetch.sub")            # '5b12f19236ac40e2' (16 hex chars, the default)
+hash_name("/abs/path/to/fetch.sub", length=64)  # full 64-character digest
+hash_name("/abs/path/to/fetch.sub", length=4)   # '5b12'
 ```
 
-Raises `ValueError` if `length` is outside `[MIN_NODE_NAME_LENGTH, MAX_NODE_NAME_LENGTH]` or is not a plain `int` (a `bool` is rejected even though it's technically an `int` subclass).
+Raises `ValueError` if `length` is outside `[MIN_HASH_LENGTH, MAX_HASH_LENGTH]` or is not a plain `int` (a `bool` is rejected even though it's technically an `int` subclass).
 
 ### Collisions
 
@@ -38,35 +38,37 @@ Truncating a hash trades collision-resistance for a shorter, more readable name.
 
 ---
 
-## `validate_node_name_length(length: int) → None`
+## `validate_hash_length(length: int) → None`
 
-Standalone validation used by both `node_name()` and `ExecutionConfig.__post_init__` (see [`docs/config.md`](../config.md#executionconfig)), so the two call sites can't drift out of sync on what counts as a valid length. Raises `ValueError` with the same message `node_name()` would raise; returns `None` (no exception) for any valid length.
+Standalone validation used by both `hash_name()` and `ExecutionConfig.__post_init__` (see [`docs/config.md`](../config.md#executionconfig)), so the two call sites can't drift out of sync on what counts as a valid length. Raises `ValueError` with the same message `hash_name()` would raise; returns `None` (no exception) for any valid length.
 
 ```python
-from htflow.utils.naming import validate_node_name_length
+from htflow.utils.naming import validate_hash_length
 
-validate_node_name_length(16)   # OK, returns None
-validate_node_name_length(3)    # raises ValueError — below MIN_NODE_NAME_LENGTH
-validate_node_name_length(65)   # raises ValueError — above MAX_NODE_NAME_LENGTH
+validate_hash_length(16)   # OK, returns None
+validate_hash_length(3)    # raises ValueError — below MIN_HASH_LENGTH
+validate_hash_length(65)   # raises ValueError — above MAX_HASH_LENGTH
 ```
 
 ---
 
 ## Ordering
 
-Node *names* depend only on the path being hashed — never on the position of that path within `HTCondorDataFlow(files=[...])` or on any other file in the list. Node *ids*, by contrast, are assigned by `Dag.AddNode()` in the order nodes are added — i.e. by each file's position in `files=[...]` — so reordering `files` reorders which id each name maps to, even though the set of names is unchanged:
+Node *names* (in the DAG-node sense, via `HTCondorDataFlow`) depend only on the path being hashed — never on the position of that path within `HTCondorDataFlow(files=[...])` or on any other file in the list. Node *ids*, by contrast, are assigned by `Dag.AddNode()` in the order nodes are added — i.e. by each file's position in `files=[...]` — so reordering `files` reorders which id each name maps to, even though the set of names is unchanged:
 
 ```python
 from htflow.dataflow import HTCondorDataFlow
+from htflow.utils.naming import hash_name
 
 forward  = HTCondorDataFlow(files=["a.sub", "b.sub"]).generate()
 backward = HTCondorDataFlow(files=["b.sub", "a.sub"]).generate()
 
-# Same two node names in both...
-set(forward.internal) == set(backward.internal)  # True
+# Same name for the same path regardless of position in files=[...]...
+forward[0].name == hash_name("a.sub") == backward[1].name  # True
+forward[1].name == hash_name("b.sub") == backward[0].name  # True
 
-# ...but each name maps to a different id, so the two mappings differ
-forward.internal == backward.internal  # False
+# ...but which id each name lands on depends on files=[...] order
+forward[0].name == backward[0].name  # False
 ```
 
-See [Node naming](../dataflow.md#node-naming) for what `dag.internal` holds after `generate()`/`write()`.
+`dag.internal` is not involved in any of this — it's an opaque slot each execution engine (`ManualEngine`, `MonitorEngine`, ...) attaches its own bookkeeping to; `HTCondorDataFlow.generate()` never touches it. See [`docs/engines.md`](../engines.md) for what each engine actually stores there.

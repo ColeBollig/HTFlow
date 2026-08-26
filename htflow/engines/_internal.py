@@ -14,7 +14,7 @@
 
 from abc import ABC, abstractmethod
 from .. import dag
-from typing import Optional
+from typing import Optional, Set
 from pathlib import Path
 import enum
 import logging
@@ -161,6 +161,40 @@ class NodeInternal(ABC):
         self.state = NodeState.SUCCESS
 
     @abstractmethod
-    def Execute(self) -> None:
+    def Execute(self, **kwargs) -> None:
         """Abstract method on how to execute this node"""
         pass
+
+class DagInternal(ABC):
+    """Common Dag internal details"""
+    def __init__(self) -> None:
+        self._ready_nodes = set()
+        self._active_nodes = set()
+
+    def __repr__(self) -> str:
+        return self.__class__.__name__
+
+    @property
+    def ready_nodes(self) -> Set[int]:
+        """Get set of ready nodes by node id"""
+        return self._ready_nodes
+
+    @property
+    def active_nodes(self) -> Set[int]:
+        """Get set of active nodes by node id"""
+        return self._active_nodes
+
+    @abstractmethod
+    def _prepare(self, node: dag.Node) -> None:
+        """Internal specific node preparations"""
+        pass
+
+    def prepare(self, node: dag.Node) -> None:
+        """Prepare a node as ready for execution"""
+        if not isinstance(node, dag.Node):
+            raise ValueError("Ready nodes can only be added to from a dag.Node")
+
+        logger.info("Readying node %s for execution", node.internal.jdl)
+
+        self._ready_nodes.add(node.id)
+        self._prepare(node)

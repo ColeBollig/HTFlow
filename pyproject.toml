@@ -22,3 +22,6 @@ include = ["htflow*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# -ra: always show a short summary of skip/xfail reasons at the end of the
+# run, even without -v -- so a skipped HTCondor-Schedd test is never buried.
+addopts = "-ra"

@@ -75,11 +75,13 @@ def add_parser(name: str, subparsers: argparse._SubParsersAction, common_parser:
         "engine",
         choices=[
             "manual",
+            "monitor",
         ],
         help=textwrap.dedent(
             """
             Engine types:
-                manual - Manually spawn/execute dataflow tasks
+                manual  - Manually spawn/execute dataflow tasks
+                monitor - Submit dataflow tasks to a local HTCondor Schedd and monitor them
             """
         ),
     )

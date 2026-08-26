@@ -34,6 +34,7 @@ htflow cleanup
 |---|---|
 | `convert [FILE]` | Write an HTCondor DAGMan file |
 | `execute manual` | Run the workflow locally as subprocesses |
+| `execute monitor` | Submit the workflow to a local HTCondor Schedd and watch it |
 | `show files` | Display all tracked files grouped by storage protocol |
 | `show types` | List all `JobType` values declared in the submit files |
 | `cleanup` | Remove the engine working directory (`flowman/`) |
@@ -62,6 +63,7 @@ Both flags may be combined; duplicates are deduplicated with a warning.
 By default, relative paths inside a submit file (`executable`, `transfer_input_files`, etc.) resolve against **HTFlow's own current working directory** — not the directory the JDL file happens to live in:
 
 - `htflow execute manual` spawns each task without changing directories.
+- `htflow execute monitor` submits each task to HTCondor without changing directories.
 - `htflow convert` writes `JOB` lines with each submit file's absolute path and no DAGMan `DIR` clause.
 
 Pass `--relative-to-source` to restore the opposite behavior — each JDL's own directory becomes the base for its relative paths (a per-task `chdir` for `execute`, a DAGMan `DIR <directory>` clause for `convert`). Or pass `--resolve-from PATH` for a fundamentally different approach: instead of changing where anything runs, it rewrites each node's relative `transfer_input_files`/`transfer_output_files` entries in place to absolute paths under `PATH` (URLs and already-absolute entries are left alone). It never touches `executable`/`arguments` and never changes any working directory — `execute`/`convert` behave exactly as the default case once the rewrite is done. The two flags are mutually exclusive. All three behaviors are driven by a single shared `ExecutionConfig` object; see [`docs/config.md`](docs/config.md).
@@ -77,12 +79,12 @@ Pass `--relative-to-source` to restore the opposite behavior — each JDL's own 
 | [`docs/cli.md`](docs/cli.md) | All commands, flags, and exit codes |
 | [`docs/commands.md`](docs/commands.md) | CLI command dispatch architecture and how to add a new command |
 | [`docs/dataflow.md`](docs/dataflow.md) | `HTCondorDataFlow` API and enforced assumptions |
-| [`docs/engines.md`](docs/engines.md) | Engine lifecycle, locking, recovery, and `ManualEngine` |
+| [`docs/engines.md`](docs/engines.md) | Engine lifecycle, locking, recovery, `ManualEngine`, and `MonitorEngine` |
 | [`docs/sources.md`](docs/sources.md) | Input file collection architecture and extension guide |
 | [`docs/config.md`](docs/config.md) | `ExecutionConfig` — shared dataflow/execution behavior settings |
 | [`docs/dag.md`](docs/dag.md) | DAG data structure |
 | [`docs/utils/directory.md`](docs/utils/directory.md) | `ChangeDir` context manager |
-| [`docs/utils/naming.md`](docs/utils/naming.md) | `node_name()` — content-addressed DAG node naming |
+| [`docs/utils/naming.md`](docs/utils/naming.md) | `hash_name()` — content-addressed naming |
 
 ---
 
@@ -91,7 +93,8 @@ Pass `--relative-to-source` to restore the opposite behavior — each JDL's own 
 When `execute` runs, it creates a `flowman/` directory in the current working directory containing:
 
 - `flowman.lock` — exclusive file lock preventing concurrent engine runs
-- `manual.state` — completion log used by `Recover()` to resume interrupted runs
+- `manual.state` — `manual` engine only: completion log used by `Recover()` to resume interrupted runs
+- `dataflow.shared.log` — `monitor` engine only: the real HTCondor job event log it submits every job's `dagman_log` into, and watches for `SUBMIT`/`JOB_TERMINATED`/`JOB_ABORTED`/`CLUSTER_REMOVE` events
 - `produced/resolved/` — resolved submit files, created by `execute` **or** `convert` whenever a node's transfer lists change — from a `JobType` shape (see [Job Type Shapes](docs/dataflow.md#job-type-shapes)), from `--resolve-from` rewriting a relative entry to absolute, or both — and `--relative-to-source` isn't set. Only created when there's actually something to resolve.
 
 Run `htflow cleanup` to remove this directory once a workflow is complete.
