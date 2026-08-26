@@ -71,7 +71,7 @@ pytest test_change_directory.py -v
 
 ### `test_monitor.py` (requires a live HTCondor Schedd)
 
-`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. If no Schedd is found it **skips** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead (this is what CI does, to guarantee the tests actually ran rather than silently skipping):
+`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. If no Schedd is found it **skips** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead. `.github/workflows/monitor-engine.yml` does exactly this: it installs and starts a real `minicondor` on AlmaLinux 10, then runs with the env var set so a broken/missing Schedd fails CI instead of silently skipping the tests:
 
 ```sh
 HTFLOW_REQUIRE_CONDOR=1 pytest tests/test_monitor.py -q
