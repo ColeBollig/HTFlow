@@ -18,7 +18,7 @@ import shutil
 import pytest
 from pathlib import Path
 
-from htflow.utils.naming import node_name as _node_name
+from htflow.utils.naming import hash_name
 
 # htcondor only publishes Linux wheels. On platforms where it isn't installed
 # (e.g. macOS CI), inject a minimal stub so that test collection and the
@@ -85,11 +85,11 @@ def tmp_path(request):
 
 @pytest.fixture
 def node_name():
-    """HTCondorDataFlow.generate() names each node via htflow.utils.naming.node_name —
+    """HTCondorDataFlow.generate() names each node via htflow.utils.naming.hash_name —
     the sha256 hex digest of the exact JDL path it was given, truncated to
     ExecutionConfig.node_name_length hex characters (default: the full 64).
     Tests use this fixture directly instead of hardcoding hashes."""
-    return _node_name
+    return hash_name
 
 
 @pytest.fixture

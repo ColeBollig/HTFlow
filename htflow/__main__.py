@@ -24,7 +24,7 @@ from htflow.dataflow import HTCondorDataFlow, AssumptionError
 from htflow.config import ExecutionConfig
 from htflow.sources import collect_jdl_files, InputError
 from htflow.exit_codes import EXIT_SETUP_FAILURE
-from htflow.utils.naming import DEFAULT_NODE_NAME_LENGTH, validate_node_name_length
+from htflow.utils.naming import DEFAULT_HASH_LENGTH, validate_hash_length
 from htflow import commands
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
         dest="node_name_length",
         action="store",
         type=int,
-        default=DEFAULT_NODE_NAME_LENGTH,
+        default=DEFAULT_HASH_LENGTH,
         metavar="LENGTH",
         help=argparse.SUPPRESS,
     )
@@ -180,7 +180,7 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
 
     if hasattr(args, "node_name_length"):
         try:
-            validate_node_name_length(args.node_name_length)
+            validate_hash_length(args.node_name_length)
         except ValueError as e:
             parser.error(f"--node-name-length: {e}")
 
