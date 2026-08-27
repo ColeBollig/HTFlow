@@ -1,0 +1,82 @@
+name: Live Condor Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  live-condor-tests:
+    name: live_condor-marked tests against a real minicondor (EL10)
+    runs-on: ubuntu-latest
+    container: almalinux:10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Container images don't ship with pip, and the minicondor install
+      # script needs curl.
+      - name: Install Python, pip, and curl
+        run: dnf install -y python3 python3-pip curl
+
+      - name: Install package and test dependencies
+        run: python3 -m pip install pytest -e .
+
+      # Installs a complete single-node HTCondor pool (collector, negotiator,
+      # schedd, startd) via HTCondor's own installer. The `minicondor` RPM
+      # (the script's default install target) depends on python3-condor, so
+      # this also puts the real htcondor2/classad2 bindings on system python3
+      # -- no separate pip install needed. Running as root in a container
+      # with no systemd, the script detects that itself and starts HTCondor
+      # by backgrounding `condor_master` directly instead of going through
+      # systemctl -- which means the daemons end up running as root too,
+      # since there's no systemd unit to say `User=condor`.
+      - name: Install and start minicondor
+        run: curl -fsSL https://get.htcondor.org | /bin/bash -s -- --no-dry-run
+
+      # condor_master forks off the rest of the daemons asynchronously, so
+      # give the schedd a moment to actually come up before trusting it.
+      - name: Wait for the Schedd to come up
+        run: |
+          for i in $(seq 1 30); do
+            if condor_q >/dev/null 2>&1; then
+              echo "Schedd is up after ${i} attempt(s)"
+              condor_version
+              condor_status || true
+              exit 0
+            fi
+            echo "Waiting for Schedd... (${i}/30)"
+            sleep 2
+          done
+          echo "::error::HTCondor Schedd never became reachable"
+          log_dir="$(condor_config_val LOG 2>/dev/null || echo /var/log/condor)"
+          echo "--- ${log_dir} ---"
+          ls -la "${log_dir}" 2>&1 || true
+          echo "--- MasterLog ---"
+          tail -n 200 "${log_dir}/MasterLog" 2>&1 || true
+          echo "--- SchedLog ---"
+          tail -n 200 "${log_dir}/SchedLog" 2>&1 || true
+          exit 1
+
+      # HTCondor's schedd refuses to create a submitter UserRec for the
+      # literal identity "condor" -- it's reserved for the daemons
+      # themselves (see MakeUserRec() in condor_schedd.V6/qmgmt.cpp). Since
+      # the daemons above ended up running as root (no systemd), submitting
+      # jobs as root too gets mapped onto that reserved "condor" identity by
+      # the schedd's own personal-condor logic and hard-rejected:
+      #   "Failed to create new User record for condor@<host>."
+      # so jobs must be submitted as a distinct, real, unprivileged user.
+      - name: Create an unprivileged user to submit jobs as
+        run: |
+          useradd -m submituser
+          chown -R submituser:submituser "${GITHUB_WORKSPACE}"
+
+      # HTFLOW_REQUIRE_CONDOR=1 turns "no reachable Schedd" from a skip into
+      # a hard failure (see tests/conftest.py's condor_schedd fixture) -- so
+      # this step can only pass if these tests actually ran against the
+      # minicondor above, never by silently skipping them. Selecting by the
+      # live_condor marker (auto-applied to any test using condor_schedd)
+      # rather than by filename means a future test file gated on a live
+      # Schedd gets picked up here automatically, with no workflow edit.
+      - name: Run live-Schedd tests as submituser (must not skip)
+        run: su submituser -c "cd '${GITHUB_WORKSPACE}' && HTFLOW_REQUIRE_CONDOR=1 python3 -m pytest -m live_condor -v -ra"

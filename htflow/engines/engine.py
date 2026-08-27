@@ -96,8 +96,3 @@ class Engine(ABC):
     def Update(self) -> None:
         """Engine specific state tracking of node execution"""
         pass
-
-
-class MonitorEngine(Engine):
-    """Place jobs to condor and monitor"""
-    pass

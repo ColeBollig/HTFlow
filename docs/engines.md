@@ -98,7 +98,7 @@ State transitions are validated by the `state` setter — setting an illegal tra
 
 ## `NodeInternal` (Abstract Base Class)
 
-`htflow.engines._internal.NodeInternal` wraps a `dag.Node` with the execution-state bookkeeping common to every engine — state transitions, parent/child notification, and failure/orphan propagation. Concrete engines subclass it and implement `Execute()` for their own task-launching mechanism; `ManualNode` (below) is the only current subclass.
+`htflow.engines._internal.NodeInternal` wraps a `dag.Node` with the execution-state bookkeeping common to every engine — state transitions, parent/child notification, and failure/orphan propagation. Concrete engines subclass it and implement `Execute()` for their own task-launching mechanism; `ManualNode` and `MonitorNode` (below) are the current subclasses.
 
 ### Constructor
 
@@ -127,7 +127,37 @@ Validates that `node` is a `dag.Node`, starts the node in `NodeState.BLOCKED`, a
 | `Done(dag)`                     | Transitions to `SUCCESS` and notifies children, readying any that are now unblocked      |
 | `Fail(dag, reason)`             | Transitions to `FAILURE` and orphans all children                                        |
 | `Orphaned(dag)`                 | Recursively marks this node and all descendants as `ORPHAN`                             |
-| `Execute()`                     | **Abstract.** Subclasses implement how the node's task is actually launched              |
+| `Execute(**kwargs)`             | **Abstract.** Subclasses implement how the node's task is actually launched; `**kwargs` lets different engines accept different launch-time arguments (`ManualNode.Execute()` takes none, `MonitorNode.Execute()` requires `schedd` plus the engine's submission options — see below) |
+
+---
+
+## `DagInternal` (Abstract Base Class)
+
+`htflow.engines._internal.DagInternal` is the counterpart to `NodeInternal` at the DAG level: the engine-agnostic bookkeeping every engine attaches to `dag.internal` (see [`docs/dataflow.md`](dataflow.md#node-naming) for why `generate()` itself never sets this). It tracks which node ids are ready to run and which are currently active, and defines the one hook concrete engines must implement to say what "ready" means for their own node type.
+
+### Constructor
+
+```python
+DagInternal()
+```
+
+Initializes `ready_nodes`/`active_nodes` as empty sets.
+
+### Properties
+
+| Property       | Type       | Description                                                  |
+|-----------------|------------|----------------------------------------------------------------|
+| `ready_nodes`  | `Set[int]` | Node ids queued for execution                                 |
+| `active_nodes` | `Set[int]` | Node ids currently running (added by `Execute()`, pruned by `Update()` once a node reaches a terminal state) |
+
+### Methods
+
+| Method               | Description                                                                                       |
+|-----------------------|-----------------------------------------------------------------------------------------------------|
+| `prepare(node)`      | Adds `node.id` to `ready_nodes`, logs it, then calls the abstract `_prepare(node)` hook             |
+| `_prepare(node)`     | **Abstract.** Engine-specific per-node preparation — both current engines just set `node.internal.state = NodeState.READY` |
+
+`Bootstrap()` (on both `ManualEngine` and `MonitorEngine`) calls `dag.internal.prepare(node)` for each blocked root node; `NodeInternal.Done()` calls it again for any child that becomes newly unblocked.
 
 ---
 
@@ -141,7 +171,7 @@ Validates that `node` is a `dag.Node`, starts the node in `NodeState.BLOCKED`, a
 ManualEngine(dag: dag.Dag, config: Optional[ExecutionConfig] = None)
 ```
 
-The `dag` argument must be a `Dag` produced by `HTCondorDataFlow.generate()`, with each node's `internal` field set to the path of its JDL file. The constructor acquires the working-directory lock, then attaches a `ManualDag` tracker to `dag.internal` and wraps every node in a `ManualNode` (passing along `config`). If any post-lock initialisation raises, the lock is released before the exception propagates.
+The `dag` argument must be a `Dag` produced by `HTCondorDataFlow.generate()`, with each node's `internal` field set to the path of its JDL file. The constructor acquires the working-directory lock, then attaches a `ManualDag` tracker (see [`DagInternal`](#daginternal-abstract-base-class)) to `dag.internal` and wraps every node in a `ManualNode` (passing along `config`). If any post-lock initialisation raises, the lock is released before the exception propagates.
 
 **Raises** `EngineExecutionError` if the lock cannot be acquired (another engine is running).
 
@@ -233,15 +263,135 @@ Reads the JDL file, builds the command from its `executable`/`arguments` fields,
 
 ## `ManualDag`
 
-Internal bookkeeping structure attached to `dag.internal` by `ManualEngine`. Tracks which node IDs are currently `READY` and which are `ACTIVE`.
-
-| Property       | Type        | Description                        |
-|----------------|-------------|------------------------------------|
-| `ready_nodes`  | `Set[int]`  | Node IDs queued for execution      |
-| `active_nodes` | `Set[int]`  | Node IDs with a running subprocess |
+`htflow.engines.manual.ManualDag` subclasses [`DagInternal`](#daginternal-abstract-base-class), attached to `dag.internal` by `ManualEngine`. It adds nothing beyond the base class — `_prepare(node)` just sets `node.internal.state = NodeState.READY`; `ready_nodes`/`active_nodes` are inherited unchanged.
 
 ---
 
-## `MonitorEngine` *(not yet implemented)*
+## `MonitorEngine`
 
-`htflow.engines.engine.MonitorEngine` is a placeholder for a future engine that will submit jobs to HTCondor and monitor them via the `htcondor2` API. It inherits from `Engine` but provides no implementation beyond the abstract interface.
+`htflow.engines.monitor.MonitorEngine` executes DAG nodes by submitting their JDLs to a live, local `htcondor2.Schedd()` and watching a shared HTCondor job event log for `SUBMIT`/`JOB_TERMINATED`/`JOB_ABORTED`/`CLUSTER_REMOVE` events, rather than running anything as a local subprocess. It requires a reachable HTCondor Schedd — see `tests/test_monitor.py` for the gating pattern used to skip (or, with `HTFLOW_REQUIRE_CONDOR=1`, fail) when one isn't available.
+
+### Constructor
+
+```python
+MonitorEngine(dag: dag.Dag, config: Optional[ExecutionConfig] = None)
+```
+
+Same contract as `ManualEngine`: acquires the working-directory lock, attaches a `MonitorDag` tracker to `dag.internal`, wraps every node in a `MonitorNode`, and releases the lock if anything in the `try` block raises. In addition it:
+
+- Creates (`touch`s) and opens `flowman/dataflow.shared.log` as an `htcondor2.JobEventLog` — this is the one file every submitted job's events get written into, regardless of what `log` (if any) each JDL sets for itself (see [Job submission](#job-submission) below). `htcondor2.JobEventLog` requires the file to already exist; nothing else creates it.
+- Picks a default HTCondor batch name, `"flowman+" + hash_name(cwd)` (see [`docs/utils/naming.md`](utils/naming.md)) — content-addressed on the current working directory, so re-running from the same directory reuses the same batch name.
+- If running itself as an HTCondor job (`_CONDOR_JOB_AD` env var set — e.g. launched by DAGMan), reads its own job ad and switches to `batch_name = f"flowman+{ClusterId}"`, and tags every job it submits with `My.ManagerId = <that ClusterId>` — this is what lets `Cleanup()` target exactly this run's jobs via a `ManagerId` constraint instead of scanning `active_nodes`.
+
+**Raises** `EngineExecutionError` if the lock cannot be acquired (another engine is running).
+
+### Exit Codes
+
+Same as `ManualEngine`: `EXIT_SUCCESS = 0`, `EXIT_FAILURE = 1`.
+
+### Job submission
+
+`MonitorNode.Execute(schedd, **kwargs)` reads the node's JDL, then sets, on top of whatever the JDL itself already specifies:
+
+| Submit key                       | Value                                  | Purpose                                                                 |
+|-----------------------------------|-----------------------------------------|---------------------------------------------------------------------------|
+| `node_name` (macro) / `My.NodeName` | the node's content-addressed name      | Lets `__process_log_events` map a `SUBMIT`/`CLUSTER_SUBMIT` event back to the node that submitted it |
+| `submit_event_notes_attrs`       | `NodeName`                              | Tells the schedd to include `NodeName` in the submit event's `StructuredNotes` — only `DAGNodeName`/`JobBatchName` are included by default |
+| `dagman_log`                      | `flowman/dataflow.shared.log`           | HTCondor's own `SUBMIT_KEY_DagmanLogFile` mechanism (the same one DAGMan itself uses) — every submitted job *additionally* writes its events here, on top of whatever `log` the JDL itself sets. This is what lets one `JobEventLog` watch every node regardless of per-JDL logging. |
+| `My.ManagerId`                    | this run's own `ClusterId` (if any)     | Only set when `MonitorEngine` is itself running as a DAGMan-launched job — see [Constructor](#constructor-2) above |
+
+After submission, `schedd.reschedule()` is called once per `Execute()` batch (not per node) — `schedd.submit()` does not itself kick the schedd the way the `condor_submit` CLI does, so without this, newly-submitted jobs would sit unprocessed until the schedd's own periodic scheduling cycle (`SCHEDD_INTERVAL`, defaults to 300s) comes around on its own.
+
+### Method Details
+
+#### `Recover()`
+
+Replays every event already in `flowman/dataflow.shared.log` through the same handling `Update()` uses (see [Event processing](#event-processing)), with log messages prefixed `[RECOVERY]`. Unlike `ManualEngine.Recover()` (a custom state-file format), this reuses the real HTCondor event log directly — a job's handle is set from the event itself (`event.cluster`) rather than from a previously-submitted `htcondor2.SubmitResult`.
+
+#### `Bootstrap()`
+
+Same as `ManualEngine.Bootstrap()`: transitions blocked root nodes to `READY` via `dag.internal.prepare()`.
+
+#### `Execute()`
+
+Submits every node in `ready_nodes`, moving each to `active_nodes` on success. A submission failure (raised exception, not a subsequent job-level failure) immediately fails that node and orphans its children, matching `ManualEngine`. See [Job submission](#job-submission) above for what happens per node, and the `reschedule()` note for why it's called once per batch.
+
+#### `Update()`
+
+Reads any new events from the shared job event log and updates node/job state accordingly (see [Event processing](#event-processing)).
+
+#### `Terminate() → Optional[int]`
+
+Same contract as `ManualEngine.Terminate()`: `None` while `ready_nodes`/`active_nodes` are non-empty or any node is non-terminal; otherwise releases the lock and returns `EXIT_SUCCESS`/`EXIT_FAILURE`.
+
+#### `Cleanup()`
+
+Removes this run's jobs from the schedd (`htcondor2.JobAction.Remove`), then releases the lock. The removal constraint is `ManagerId == <ClusterId>` when running as a DAGMan-launched job, or otherwise `member(ClusterId, {...})` built from the cluster ids of every node currently in `active_nodes`. Called only from signal handlers on interruption, like `ManualEngine.Cleanup()`.
+
+### Event processing
+
+`__process_log_events()` (used by both `Recover()` and `Update()`) handles:
+
+| Event                          | Effect                                                                                          |
+|----------------------------------|----------------------------------------------------------------------------------------------------|
+| `SUBMIT` / `CLUSTER_SUBMIT`     | Maps the event back to its node via `StructuredNotes["NodeName"]`, records the cluster id ↔ node id mapping, marks the node a `factory` node on `CLUSTER_SUBMIT` (late materialization — the event describes the whole cluster, not one proc, and carries `proc == -1`), otherwise increments the node's queued-job count and seeds that proc's exit state as unknown |
+| `JOB_TERMINATED`                | Records the proc's exit code (or `-1 * signal number` if it terminated abnormally), decrements the queued count, and checks whether the node is now fully done |
+| `JOB_ABORTED`                    | Same as `JOB_TERMINATED`, but records a sentinel `JOB_EXIT_ABORTED` exit code                     |
+| `CLUSTER_REMOVE`                 | Only meaningful for factory nodes — signals that late materialization is completely finished; the node's completion check runs even though its per-proc queued count may not have naturally reached zero on its own |
+
+A node is considered done once its queued-job count reaches zero (and, for factory nodes, only once `CLUSTER_REMOVE` has been seen): all-zero exit codes call `Done()`; any nonzero exit code calls `Fail()` with a summary of how many of the node's jobs didn't exit cleanly. Either way, the node id is dropped from `active_nodes`.
+
+**Known limitation:** a job going on hold (`JOB_HELD`) is not one of the handled event types — a held job leaves its node stuck non-terminal indefinitely, since nothing decrements its queued count or marks it done/failed. This is deliberate: the engine itself doesn't assume a held job should be treated as failed or auto-removed (a real workflow's held job should stay held for inspection). `tests/test_monitor.py` works around this for its own safety by adding `periodic_remove = JobStatus == 5` to its test JDLs only — not something `MonitorEngine` does for real submissions.
+
+### Usage
+
+```python
+from htflow.dataflow import HTCondorDataFlow
+from htflow.engines.monitor import MonitorEngine
+
+dag = HTCondorDataFlow(files=["a.sub", "b.sub", "c.sub"]).generate()
+engine = MonitorEngine(dag)
+
+engine.Recover()
+engine.Bootstrap()
+while (code := engine.Terminate()) is None:
+    engine.Execute()
+    engine.Update()
+
+exit(code)
+```
+
+---
+
+## `MonitorNode`
+
+`htflow.engines.monitor.MonitorNode` subclasses [`NodeInternal`](#nodeinternal-abstract-base-class), adding HTCondor submission-handle and per-proc job-state tracking for use by `MonitorEngine`. Nodes are not created directly — `MonitorEngine.__init__()` creates one per DAG node.
+
+### Properties
+
+| Property   | Type                                     | Description                                                                 |
+|-------------|--------------------------------------------|---------------------------------------------------------------------------|
+| `handle`   | `Union[int, htcondor2.SubmitResult]`      | The `SubmitResult` from this node's own `Execute()`, or a bare cluster id when set during `Recover()` |
+| `factory`  | `bool`                                     | Whether this node materializes more than one job (seen a `CLUSTER_SUBMIT` event) — gates the `CLUSTER_REMOVE`-only completion check |
+| `jobs`     | `List[int]`                                | Per-proc exit codes, indexed by HTCondor proc id (`JOB_EXIT_UNKNOWN`/`JOB_EXIT_ABORTED` sentinels for unresolved/aborted procs) |
+| `queued`   | `int`                                       | Count of this node's procs that have submitted but not yet exited          |
+| `jobid`    | `Optional[int]`                            | This node's HTCondor cluster id, or `None` before submission                |
+
+Also supports `node.internal[proc]`/`node.internal[proc] = exit_code` (`__getitem__`/`__setitem__`) for per-proc exit-code lookup/assignment, `len(node.internal)` for the number of tracked procs, and `job_queued()`/`job_exited()` to adjust `queued`.
+
+### `Execute(schedd, **kwargs)`
+
+Reads the JDL, tags and submits it as described in [Job submission](#job-submission) above, and transitions to `NodeState.ACTIVE`.
+
+---
+
+## `MonitorDag`
+
+`htflow.engines.monitor.MonitorDag` subclasses [`DagInternal`](#daginternal-abstract-base-class), attached to `dag.internal` by `MonitorEngine`. On top of the inherited `ready_nodes`/`active_nodes`, it maintains a HTCondor cluster id ↔ node id mapping (`node_jid_map`), exposed through the same `__getitem__`/`__contains__`/`__setitem__` interface used elsewhere in `htflow`:
+
+| Access                      | Behavior                                                                 |
+|-------------------------------|-----------------------------------------------------------------------|
+| `dag.internal[node_name: str]` | Looks the name up in the underlying `dag.Dag` and returns its node id (`KeyError` if not found) |
+| `dag.internal[cluster_id: int]` | Returns the node id previously recorded for that HTCondor cluster id |
+| `dag.internal[cluster_id] = node_id` | Records a new cluster id → node id mapping (set once, on the first `SUBMIT`/`CLUSTER_SUBMIT` event for that cluster) |
+| `cluster_id in dag.internal` / `node_name in dag.internal` | Existence check for either key type                        |

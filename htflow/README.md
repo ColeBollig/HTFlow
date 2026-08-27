@@ -25,7 +25,8 @@ htflow/
 │   ├── __init__.py
 │   ├── engine.py         # abstract Engine base class + locking
 │   ├── _internal.py      # shared NodeState/NodeInternal/DagInternal machinery
-│   └── manual.py         # ManualEngine — runs nodes as local subprocesses
+│   ├── manual.py         # ManualEngine — runs nodes as local subprocesses
+│   └── monitor.py        # MonitorEngine — submits nodes to a local HTCondor Schedd
 ├── sources/             # resolves --jdl/--dir into a list of JDL file paths
 │   ├── __init__.py       # public API: collect_jdl_files, InputError
 │   ├── _errors.py
@@ -35,7 +36,7 @@ htflow/
 │   └── from_jdl.py       # --jdl resolver + default extension handler
 └── utils/               # small standalone helpers, no cross-package deps
     ├── directory.py      # ChangeDir context manager
-    └── naming.py         # node_name() — content-addressed node naming
+    └── naming.py         # hash_name() — content-addressed naming
 ```
 
 ## Top-Level Modules
@@ -69,7 +70,8 @@ Each `htflow <command>` is a subpackage exposing `add_parser(name, subparsers, c
 |---|---|
 | `engine.py` | Abstract `Engine` base class: `work_dir()`/`lock_file()` (paths under `flowman/`), `AcquireLock()`/`ReleaseLock()` (non-blocking `fcntl` lock so two engines can't run against the same working directory), and the abstract lifecycle (`Bootstrap`, `Execute`, `Update`, `Terminate`, `Recover`, `Cleanup`). |
 | `_internal.py` | Shared, engine-agnostic node/DAG execution-state machinery used by concrete engines: `NodeState` enum, abstract `NodeInternal` (validated state transitions, `Notify`/`Fail`/`Done` lifecycle), and abstract `DagInternal` (tracks ready/active node sets via `prepare()`). New engines should build on this rather than reinventing node state tracking. |
-| `manual.py` | `ManualEngine` — the only currently working engine. Runs each ready node as a local subprocess (`Popen` on the JDL's `executable`/`arguments`), optionally `chdir`'d via `utils.directory.ChangeDir` when `--relative-to-source` is set, and persists an append-only state log (`flowman/manual.state`) so `Recover()` can resume an interrupted run. |
+| `manual.py` | `ManualEngine` — runs each ready node as a local subprocess (`Popen` on the JDL's `executable`/`arguments`), optionally `chdir`'d via `utils.directory.ChangeDir` when `--relative-to-source` is set, and persists an append-only state log (`flowman/manual.state`) so `Recover()` can resume an interrupted run. |
+| `monitor.py` | `MonitorEngine` — submits each ready node's JDL to a local `htcondor2.Schedd`, tagging it with a content-addressed `NodeName`/`submit_event_notes_attrs` and a shared `dagman_log` (`flowman/dataflow.shared.log`) so a single `htcondor2.JobEventLog` can watch every submitted node's `SUBMIT`/`JOB_TERMINATED`/`JOB_ABORTED`/`CLUSTER_REMOVE` events regardless of what each JDL's own `log` is set to. Requires a reachable HTCondor Schedd; see `tests/test_monitor.py`. |
 
 ## `sources/` — Resolving CLI Input
 
@@ -90,7 +92,7 @@ Small helpers with no dependencies on the rest of the package.
 | Module | Purpose |
 |---|---|
 | `directory.py` | `ChangeDir` — context manager that temporarily `chdir`s (restoring on exit, even on exception), with an `enabled` flag so callers can no-op it conditionally. |
-| `naming.py` | `node_name(path, length)` — content-addressed DAG node naming (truncated sha256 digest of the JDL path), plus length validation constants. Configurable via `--node-name-length`/`ExecutionConfig.node_name_length`. |
+| `naming.py` | `hash_name(path, length)` — content-addressed naming (truncated sha256 digest of a path), plus length validation constants. Used for DAG node names (configurable via `--node-name-length`/`ExecutionConfig.node_name_length`) and by `MonitorEngine` for its default HTCondor batch name. |
 
 ## Adding New Functionality
 

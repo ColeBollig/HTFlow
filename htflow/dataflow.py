@@ -29,7 +29,7 @@ import enum
 from . import dag
 from .config import ExecutionConfig
 from .engines.engine import Engine
-from .utils.naming import node_name
+from .utils.naming import hash_name
 import copy
 
 from pathlib import Path
@@ -263,12 +263,10 @@ class HTCondorDataFlow():
         pending_resolutions = []
 
         self._dag = dag.Dag()
-        self._dag.internal = dict()
         for i, jdl in enumerate(self._files):
-            name = node_name(jdl, length=self._config.node_name_length)
+            name = hash_name(jdl, length=self._config.node_name_length)
             node = self._dag.AddNode(name)
             node.internal = jdl
-            self._dag.internal[name] = node.id
 
         # Parent-directory traversal is only disallowed when no path resolution flag is
         # active; --relative-to-source/--resolve-from users have opted into their own

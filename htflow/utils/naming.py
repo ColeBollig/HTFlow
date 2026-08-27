@@ -18,21 +18,21 @@ import hashlib
 from pathlib import Path
 from typing import Union
 
-MIN_NODE_NAME_LENGTH = 4
-MAX_NODE_NAME_LENGTH = 64
-DEFAULT_NODE_NAME_LENGTH = 16
+MIN_HASH_LENGTH = 4
+MAX_HASH_LENGTH = 64
+DEFAULT_HASH_LENGTH = 16
 
 
-def validate_node_name_length(length: int) -> None:
-    """Raise ValueError unless length is an int within [MIN_NODE_NAME_LENGTH, MAX_NODE_NAME_LENGTH]"""
-    if not isinstance(length, int) or isinstance(length, bool) or not (MIN_NODE_NAME_LENGTH <= length <= MAX_NODE_NAME_LENGTH):
+def validate_hash_length(length: int) -> None:
+    """Raise ValueError unless length is an int within [MIN_HASH_LENGTH, MAX_HASH_LENGTH]"""
+    if not isinstance(length, int) or isinstance(length, bool) or not (MIN_HASH_LENGTH <= length <= MAX_HASH_LENGTH):
         raise ValueError(
-            f"node name length must be an integer between {MIN_NODE_NAME_LENGTH} and "
-            f"{MAX_NODE_NAME_LENGTH} (got {length!r})"
+            f"hash length must be an integer between {MIN_HASH_LENGTH} and "
+            f"{MAX_HASH_LENGTH} (got {length!r})"
         )
 
 
-def node_name(path: Union[Path, str], length: int = DEFAULT_NODE_NAME_LENGTH) -> str:
-    """Content-addressed DAG node name: the sha256 hex digest of `path`, truncated to `length` hex characters"""
-    validate_node_name_length(length)
+def hash_name(path: Union[Path, str], length: int = DEFAULT_HASH_LENGTH) -> str:
+    """Content-addressed name for a thing identified by `path`: the sha256 hex digest of `path`, truncated to `length` hex characters"""
+    validate_hash_length(length)
     return hashlib.sha256(str(Path(path)).encode("utf-8")).hexdigest()[:length]

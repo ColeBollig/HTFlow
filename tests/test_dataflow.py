@@ -279,13 +279,6 @@ class TestGenerate:
         d2 = HTCondorDataFlow(files=[a]).generate()
         assert d1[0].name == d2[0].name
 
-    def test_dag_internal_maps_node_name_to_id(self, make_sub, node_name):
-        a = make_sub("a")
-        b = make_sub("b")
-        df = HTCondorDataFlow(files=[a, b])
-        d = df.generate()
-        assert d.internal == {node_name(a): 0, node_name(b): 1}
-
     def test_node_name_independent_of_list_order(self, make_sub, node_name):
         """A node's name is a function of its own path only — reordering the
         files list must not change what name either path hashes to."""
@@ -295,21 +288,6 @@ class TestGenerate:
         backward = HTCondorDataFlow(files=[b, a]).generate()
         assert forward[0].name == node_name(a) == backward[1].name
         assert forward[1].name == node_name(b) == backward[0].name
-
-    def test_dag_internal_depends_on_list_order_even_though_names_dont(self, make_sub, node_name):
-        """Node *names* don't depend on list order (previous test), but node
-        *ids* — and therefore dag.internal, which maps name -> id — are assigned
-        by position in files=[...], so swapping the order changes the mapping
-        even though the same two names appear in both."""
-        a = make_sub("a")
-        b = make_sub("b")
-        forward = HTCondorDataFlow(files=[a, b]).generate()
-        backward = HTCondorDataFlow(files=[b, a]).generate()
-
-        assert set(forward.internal) == set(backward.internal) == {node_name(a), node_name(b)}
-        assert forward.internal[node_name(a)] == 0 and forward.internal[node_name(b)] == 1
-        assert backward.internal[node_name(a)] == 1 and backward.internal[node_name(b)] == 0
-        assert forward.internal != backward.internal
 
     def test_default_node_name_length_is_16(self, make_sub):
         a = make_sub("a")
