@@ -42,9 +42,17 @@ jobs:
       # values (src/condor_tests/ornithology/condor.py's DEFAULT_PARAMS) --
       # not correctness-affecting, just how often daemons poll/report/
       # negotiate. Safe for a personal/test pool; never do this to a
-      # production pool. condor_restart picks up the new config.d file;
-      # LOCAL_CONFIG_DIR is queried rather than hardcoded in case a future
-      # HTCondor release changes the RPM's default layout.
+      # production pool. LOCAL_CONFIG_DIR is queried rather than hardcoded
+      # in case a future HTCondor release changes the RPM's default layout.
+      #
+      # condor_reconfig, not condor_restart: a restart kills and respawns
+      # every daemon, regenerating their address/lock files -- since those
+      # get created here as root but jobs are later submitted as the
+      # unprivileged submituser below, a restart risks leaving them in a
+      # state submituser can't read ("Unable to locate local daemon").
+      # reconfig re-reads config and re-arms each daemon's periodic timers
+      # in place, without touching daemon identity/files at all -- verified
+      # locally to apply these same interval changes just as effectively.
       - name: Tune HTCondor timing for fast tests
         run: |
           config_dir="$(condor_config_val LOCAL_CONFIG_DIR 2>/dev/null | awk '{print $1}')"
@@ -63,7 +71,7 @@ jobs:
           MachineMaxVacateTime = 2
           RUNBENCHMARKS = 0
           EOF
-          condor_restart
+          condor_reconfig
 
       # condor_master forks off the rest of the daemons asynchronously, so
       # give the schedd a moment to actually come up before trusting it.
