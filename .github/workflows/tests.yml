@@ -1,7 +1,14 @@
 name: Tests
 
 on:
+  # Scoped to main only: pull_request's default types (opened, synchronize,
+  # reopened) already cover a PR branch -- once when the PR opens, once per
+  # subsequent push. An unscoped `push:` here would ALSO fire on every push
+  # to an open PR's branch (a different event, same commit), running this
+  # workflow twice per push. Direct pushes to main (e.g. a squash-merge)
+  # still need their own trigger, since no pull_request event covers them.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

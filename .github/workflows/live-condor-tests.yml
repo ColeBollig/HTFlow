@@ -1,7 +1,11 @@
 name: Live Condor Tests
 
 on:
+  # Scoped to main only -- see tests.yml's on: block for why. Unscoped
+  # push: would double-run this workflow on every push to an open PR's
+  # branch, once via push and once via pull_request's synchronize event.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
