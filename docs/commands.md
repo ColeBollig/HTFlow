@@ -64,6 +64,29 @@ def run(df, args):
 
 Because this dispatch is internal to `show`, `commands.CMD_TO_FUNCTION` stays a flat `{name: callable}` mapping at every level — `__main__.py` never needs to know that `show` has subcommands at all.
 
+### `submit`'s per-backend subparsers
+
+`submit` needs something `show` doesn't: each of its subcommands (currently just `htcondor`) has its own flags (`--mode`, `--interval`, `--dry-run`), not just a name picked from a flat `choices=[...]` list. So `htflow/commands/submit/__init__.py` discovers its backends the same way (`discover(__path__, __name__, required_attrs=("add_parser", "run"))` — the same two-attribute contract as a top-level command, not `show`'s single-attribute `("run",)`), but registers each one as a **real** nested subparser instead of a value of a positional:
+
+```python
+BACKENDS = discover(__path__, __name__, required_attrs=("add_parser", "run"))
+
+def add_parser(name, subparsers, common_parser):
+    submit_p = subparsers.add_parser(name, ...)  # no parents=[common_parser] here --
+                                                    # submit itself takes no flags
+    backend_subparsers = submit_p.add_subparsers(dest="backend", required=True, metavar="backend")
+    for bname, backend in BACKENDS.items():
+        backend.add_parser(bname, backend_subparsers, common_parser)
+    return submit_p
+
+def run(df, args):
+    BACKENDS[args.backend].run(df, args)
+```
+
+Each backend module (e.g. `htflow/commands/submit/htcondor.py`) implements `add_parser`/`run` with the exact same signature a top-level command uses — `add_parser(name, subparsers, common_parser)` registers its own subparser (typically `parents=[common_parser]`, giving it `--jdl`/`--dir`/etc. at its own level: `htflow submit htcondor --jdl a.sub --mode manual`), and `run(df, args)` executes it. Because argparse subparsers all write into one shared `Namespace` no matter how deeply nested, `hasattr(args, "jdl")` and every other flag `main()` inspects work exactly the same as for a single-level command — `__main__.py` needs no special-casing for the extra nesting.
+
+`submit_p` itself deliberately omits `parents=[common_parser]` (like `cleanup`, though for a different reason — `cleanup` has no dataflow at all, `submit` just doesn't own `--jdl` at its own level, its backend does).
+
 ---
 
 ## `htflow.exit_codes`

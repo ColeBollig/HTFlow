@@ -281,7 +281,7 @@ Same contract as `ManualEngine`: acquires the working-directory lock, attaches a
 
 - Creates (`touch`s) and opens `flowman/dataflow.shared.log` as an `htcondor2.JobEventLog` — this is the one file every submitted job's events get written into, regardless of what `log` (if any) each JDL sets for itself (see [Job submission](#job-submission) below). `htcondor2.JobEventLog` requires the file to already exist; nothing else creates it.
 - Picks a default HTCondor batch name, `"flowman+" + hash_name(cwd)` (see [`docs/utils/naming.md`](utils/naming.md)) — content-addressed on the current working directory, so re-running from the same directory reuses the same batch name.
-- If running itself as an HTCondor job (`_CONDOR_JOB_AD` env var set — e.g. launched by DAGMan), reads its own job ad and switches to `batch_name = f"flowman+{ClusterId}"`, and tags every job it submits with `My.ManagerId = <that ClusterId>` — this is what lets `Cleanup()` target exactly this run's jobs via a `ManagerId` constraint instead of scanning `active_nodes`.
+- If running itself as an HTCondor job (`_CONDOR_JOB_AD` env var set — e.g. launched by DAGMan, or by `htflow submit htcondor --mode monitor`, see [`docs/cli.md`](cli.md#htflow-submit-htcondor---mode-manualmonitor)), reads its own job ad and switches to `batch_name = f"flowman-monitor+{ClusterId}"`, and tags every job it submits with `My.ManagerId = <that ClusterId>` (stringified -- `htcondor2.Submit` rejects a raw `int` value) — this is what lets `Cleanup()` target exactly this run's jobs via a `ManagerId` constraint instead of scanning `active_nodes`.
 
 **Raises** `EngineExecutionError` if the lock cannot be acquired (another engine is running).
 

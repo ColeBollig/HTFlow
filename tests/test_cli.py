@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from htflow.__main__ import main
+from htflow.commands.submit import htcondor as submit_htcondor
 from htflow.utils.directory import ChangeDir
 
 
@@ -331,6 +332,262 @@ class TestResolveFrom:
         resolved = tmp_path / "flowman" / "produced" / "resolved" / "a.sub.resolved"
         assert resolved.exists()
         assert f"transfer_input_files = {target / 'data.txt'}" in resolved.read_text()
+
+
+# ---------------------------------------------------------------------------
+# submit htcondor
+# ---------------------------------------------------------------------------
+#
+# These exercise the CLI-level plumbing only (subparser wiring, arg
+# forwarding, submit-description construction via --dry-run). They never
+# touch a real Schedd -- htcondor2.Schedd()/schedd.submit() is only reached
+# when --dry-run is absent, which none of these tests do.
+
+class TestSubmitHtcondorQuoting:
+    def test_plain_value_unquoted(self):
+        assert submit_htcondor._submit_string("execute manual") == '"execute manual"'
+
+    def test_embedded_double_quote_is_doubled(self):
+        assert submit_htcondor._submit_string('say "hi"') == '"say ""hi"""'
+
+
+class TestSubmitHtcondor:
+    def test_missing_mode_exits_2(self, make_sub):
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a)) == 2
+
+    def test_missing_backend_exits_2(self, make_sub):
+        a = make_sub("a")
+        assert run_cli("submit", "--jdl", str(a)) == 2
+
+    def test_unknown_backend_exits_2(self, make_sub):
+        a = make_sub("a")
+        assert run_cli("submit", "nope", "--jdl", str(a)) == 2
+
+    def test_missing_htflow_executable_exits_125(self, make_sub, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: None)
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run") == 125
+
+    def test_invalid_dataflow_exits_125_before_building_submit(self, make_sub, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a", outputs=["dup.txt"])
+        b = make_sub("b", outputs=["dup.txt"])
+        code = run_cli("submit", "htcondor", "--jdl", str(a), str(b), "--mode", "manual", "--dry-run")
+        assert code == 125
+
+    def test_dry_run_does_not_touch_schedd(self, make_sub, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        submitted = []
+        monkeypatch.setattr(submit_htcondor.htcondor2, "Schedd", lambda: submitted.append(True))
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run") == 0
+        assert submitted == []
+
+    def test_manual_mode_uses_vanilla_universe(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run") == 0
+        out = capsys.readouterr().out
+        assert "universe = vanilla" in out
+        assert "execute manual" in out
+        assert str(a.resolve()) in out
+
+    def test_monitor_mode_uses_local_universe(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "monitor", "--dry-run") == 0
+        out = capsys.readouterr().out
+        assert "universe = local" in out
+        assert "execute monitor" in out
+
+    def test_interval_forwarded(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--interval", "5", "--dry-run") == 0
+        assert "--interval 5.0" in capsys.readouterr().out
+
+    def test_relative_to_source_forwarded(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--relative-to-source", "--dry-run")
+        assert code == 0
+        assert "--relative-to-source" in capsys.readouterr().out
+
+    def test_resolve_from_forwarded(self, make_sub, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        target = tmp_path / "target"
+        target.mkdir()
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--resolve-from", str(target), "--dry-run")
+        assert code == 0
+        assert f"--resolve-from {target}" in capsys.readouterr().out
+
+    def test_job_shapes_forwarded(self, make_sub, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a", extra="JobType = worker")
+        shapes_file = tmp_path / "shapes.json"
+        shapes_file.write_text(json.dumps({"worker": {}}))
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--job-shapes", str(shapes_file), "--dry-run")
+        assert code == 0
+        assert "--job-shapes" in capsys.readouterr().out
+
+    def test_uses_shell_not_executable_arguments(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run") == 0
+        out = capsys.readouterr().out
+        assert "shell = " in out
+        assert "executable = " not in out
+        assert "arguments = " not in out
+
+
+class TestSubmitHtcondorNoSharedFs:
+    def test_rejected_with_monitor_mode(self, make_sub, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "monitor", "--no-shared-fs", "--dry-run")
+        assert code == 125
+
+    def test_sets_transfer_files(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a", inputs=["ext.txt"])
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "should_transfer_files = YES" in out
+        assert "transfer_input_files" in out
+        assert a.name in out
+        assert "ext.txt" in out
+        assert "transfer_output_files" in out
+        assert "flowman" in out
+
+    def test_jdl_argument_uses_basename(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 0
+        assert f"--jdl {a.name}" in capsys.readouterr().out
+
+    def test_basename_collision_exits_125(self, make_sub, tmp_path, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        d = tmp_path / "other"
+        d.mkdir()
+        clash = d / a.name
+        clash.write_text(a.read_text())
+        code = run_cli("submit", "htcondor", "--jdl", str(a), str(clash), "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 125
+
+    def test_root_collides_with_jdl_basename_exits_125(self, make_sub, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a", inputs=["other/a.sub"])
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 125
+
+    def test_job_shapes_collides_with_jdl_basename_exits_125(self, make_sub, tmp_path, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        d = tmp_path / "shapes"
+        d.mkdir()
+        shapes = d / a.name
+        shapes.write_text("{}")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--no-shared-fs", "--job-shapes", str(shapes), "--dry-run")
+        assert code == 125
+
+    def test_url_root_passes_through_uncorrupted(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a", inputs=["osdf:///osg-htc.org/some/path/ext.txt"])
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 0
+        assert "osdf:///osg-htc.org/some/path/ext.txt" in capsys.readouterr().out
+
+    def test_url_leaf_excluded_from_transfer_output(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a", outputs=["osdf:///osg-htc.org/results/out.txt"])
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 0
+        out = capsys.readouterr().out
+        transfer_output_line = next(l for l in out.splitlines() if l.startswith("transfer_output_files"))
+        assert "osdf" not in transfer_output_line
+        assert "flowman" in transfer_output_line
+
+    def test_intermediate_files_never_transferred(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a", inputs=["ext.txt"], outputs=["mid.txt"])
+        b = make_sub("b", inputs=["mid.txt"], outputs=["final.txt"])
+        code = run_cli("submit", "htcondor", "--jdl", str(a), str(b), "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "mid.txt" not in out
+        assert "ext.txt" in out
+        assert "final.txt" in out
+
+    def test_works_with_dir_input(self, make_sub, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a", outputs=["a_out.txt"])
+        code = run_cli("submit", "htcondor", "--dir", str(tmp_path), "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 0
+        out = capsys.readouterr().out
+        assert f"--jdl {a.name}" in out
+        assert a.name in out
+        assert "a_out.txt" in out
+
+    def test_default_mode_sets_no_transfer_keys(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run") == 0
+        out = capsys.readouterr().out
+        assert "should_transfer_files = NO" in out
+        assert "transfer_input_files" not in out
+        assert "transfer_output_files" not in out
+
+    def test_combines_with_container(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        code = run_cli(
+            "submit", "htcondor", "--jdl", str(a), "--mode", "manual",
+            "--no-shared-fs", "--container", "docker://ubuntu:22.04", "--dry-run",
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "should_transfer_files = YES" in out
+        assert 'container_image = "docker://ubuntu:22.04"' in out
+
+
+class TestSubmitHtcondorContainer:
+    def test_rejected_with_monitor_mode(self, make_sub, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "monitor", "--container", "docker://ubuntu", "--dry-run")
+        assert code == 125
+
+    def test_sets_container_image(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--container", "docker://ubuntu:22.04", "--dry-run")
+        assert code == 0
+        assert 'container_image = "docker://ubuntu:22.04"' in capsys.readouterr().out
+
+    def test_absent_by_default(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run") == 0
+        assert "container_image" not in capsys.readouterr().out
+
+    def test_value_with_space_preserved(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--container", "my image.sif", "--dry-run")
+        assert code == 0
+        assert 'container_image = "my image.sif"' in capsys.readouterr().out
+
+    def test_embedded_double_quote_is_doubled(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--container", 'weird"image', "--dry-run")
+        assert code == 0
+        assert 'container_image = "weird""image"' in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
