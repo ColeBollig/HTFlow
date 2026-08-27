@@ -49,7 +49,7 @@ Run a specific test by name:
 ctest -R test_change_directory
 ```
 
-CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_execute`, `test_sources`, `test_naming`, `test_monitor`. `test_monitor` skips gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
+CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_execute`, `test_sources`, `test_naming`, `test_monitor`, `test_submit`. `test_monitor` and `test_submit` both skip gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
 
 ---
 
@@ -69,20 +69,22 @@ pytest test_change_directory.py -v
 
 ---
 
-### `test_monitor.py` (requires a live HTCondor Schedd)
+### `test_monitor.py` / `test_submit.py` (require a live HTCondor Schedd)
 
-`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. If no Schedd is found it **skips** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead. `.github/workflows/live-condor-tests.yml` does exactly this: it installs and starts a real `minicondor` on AlmaLinux 10, then runs with the env var set so a broken/missing Schedd fails CI instead of silently skipping the tests:
+`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. `test_submit.py` does the same for `htflow submit htcondor`: it submits the real wrapper job (`--mode manual` as vanilla universe, `--mode monitor` as local universe) and, for `--mode monitor`, the real inner job the wrapper itself submits, then reads both jobs' actual `ExitCode` back from `condor_schedd.history()` rather than from `htflow submit`'s own process exit code (which only reflects the submission succeeding, not the job's eventual result). If no Schedd is found either file **skips** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead. `.github/workflows/live-condor-tests.yml` does exactly this: it installs and starts a real `minicondor` on AlmaLinux 10, then runs with the env var set so a broken/missing Schedd fails CI instead of silently skipping the tests:
 
 ```sh
-HTFLOW_REQUIRE_CONDOR=1 pytest tests/test_monitor.py -q
+HTFLOW_REQUIRE_CONDOR=1 pytest tests/test_monitor.py tests/test_submit.py -q
 ```
 
 Because each test is mostly waiting on real daemon round trips (submit, schedule, run, report back), it's I/O-bound rather than CPU-bound -- a good fit for parallelizing across processes even without extra cores. Install `pytest-xdist` and run with `-n`:
 
 ```sh
 pip install pytest-xdist
-pytest -n auto tests/test_monitor.py -q
+pytest -n auto tests/test_monitor.py tests/test_submit.py -q
 ```
+
+`CMakeLists.txt` detects `pytest-xdist` at configure time and adds `-n auto` to these two `ctest` targets automatically when it's installed (falling back to sequential, with a `message(STATUS ...)` note, when it isn't) -- so a plain `ctest` run gets this speedup for free, no flag needed. This parallelizes *within* each file's own `pytest` invocation (worker processes pulling from the same item queue), not by splitting either file into more `ctest` targets.
 
 Each test uses its own isolated `tmp_path` (own `flowman/` lock directory, own batch name), so they don't collide when run concurrently against the same Schedd.
 

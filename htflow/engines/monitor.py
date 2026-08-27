@@ -186,8 +186,8 @@ class MonitorNode(NodeInternal):
             JDL[SUBMIT_KEY_DAGMAN_LOG_FILE] = str(kwargs[JDL_LOG_FILE])
 
             if kwargs.get(JDL_MANAGER_ID) is not None:
-                JDL[JDL_MANAGER_ID] = kwargs[JDL_MANAGER_ID]
-                JDL[f"My.{ATTR_MANAGER_ID}"] = kwargs[JDL_MANAGER_ID]
+                JDL[JDL_MANAGER_ID] = str(kwargs[JDL_MANAGER_ID])
+                JDL[f"My.{ATTR_MANAGER_ID}"] = str(kwargs[JDL_MANAGER_ID])
 
             oauth = JDL.issue_credentials()
             if oauth is not None:
@@ -277,7 +277,7 @@ class MonitorEngine(Engine):
 
             if self._ad:
                 self._jid = self._ad["ClusterId"]
-                self._batch_name = f"flowman+{self._jid}"
+                self._batch_name = f"flowman-monitor+{self._jid}"
 
             self._submit_options = {
                 "batchname": "_batch_name",

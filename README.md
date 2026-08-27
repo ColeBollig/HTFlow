@@ -18,6 +18,9 @@ htflow convert pipeline.dag --dir ./jobs/
 # Execute the workflow locally (manual engine)
 htflow execute manual --jdl fetch.sub process.sub report.sub
 
+# Or submit it as an HTCondor job that runs the engine for you
+htflow submit htcondor --mode manual --jdl fetch.sub process.sub report.sub
+
 # Inspect the dataflow
 htflow show files --jdl fetch.sub process.sub report.sub
 htflow show types --jdl fetch.sub process.sub report.sub
@@ -35,6 +38,8 @@ htflow cleanup
 | `convert [FILE]` | Write an HTCondor DAGMan file |
 | `execute manual` | Run the workflow locally as subprocesses |
 | `execute monitor` | Submit the workflow to a local HTCondor Schedd and watch it |
+| `submit htcondor --mode manual` | Submit `execute manual` itself as an HTCondor **vanilla** universe job |
+| `submit htcondor --mode monitor` | Submit `execute monitor` itself as an HTCondor **local** universe job |
 | `show files` | Display all tracked files grouped by storage protocol |
 | `show types` | List all `JobType` values declared in the submit files |
 | `cleanup` | Remove the engine working directory (`flowman/`) |

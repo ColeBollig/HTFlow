@@ -56,6 +56,9 @@ except ImportError:
         def __setitem__(self, key: str, value: str):
             self._data[key.lower()] = value
 
+        def setSubmitMethod(self, method):
+            pass
+
         def __str__(self):
             return "\n".join(f"{k} = {v}" for k, v in self._data.items())
 
@@ -68,11 +71,28 @@ except ImportError:
 # registered into sys.modules, not this module's namespace).
 import htcondor2
 
+# classad2 is the same story -- htflow.engines.monitor imports it
+# unconditionally (only ever used inside its _CONDOR_JOB_AD branch, never
+# exercised outside a real self-submitted job), so merely importing that
+# module -- even just to reference a constant, as test_submit.py does --
+# breaks collection on a platform without the real package.
+try:
+    import classad2
+    _CLASSAD2_SOURCE = f"REAL package ({classad2.__file__})"
+except ImportError:
+    from unittest.mock import MagicMock
+    sys.modules["classad2"] = MagicMock()
+    _CLASSAD2_SOURCE = "MOCK stub (real classad2 package not installed)"
+
 
 def pytest_report_header(config):
-    """Print whether tests are running against the real htcondor2 bindings
-    or the fallback mock, so this is obvious in any pytest run's output."""
-    return f"htcondor2 bindings: {_HTCONDOR2_SOURCE}"
+    """Print whether tests are running against the real htcondor2/classad2
+    bindings or the fallback mocks, so this is obvious in any pytest run's
+    output."""
+    return [
+        f"htcondor2 bindings: {_HTCONDOR2_SOURCE}",
+        f"classad2 bindings: {_CLASSAD2_SOURCE}",
+    ]
 
 
 # ---------------------------------------------------------------------------
