@@ -20,7 +20,7 @@ jobs:
         run: dnf install -y python3 python3-pip curl
 
       - name: Install package and test dependencies
-        run: python3 -m pip install pytest -e .
+        run: python3 -m pip install pytest pytest-xdist -e .
 
       # Installs a complete single-node HTCondor pool (collector, negotiator,
       # schedd, startd) via HTCondor's own installer. The `minicondor` RPM
@@ -33,6 +33,37 @@ jobs:
       # since there's no systemd unit to say `User=condor`.
       - name: Install and start minicondor
         run: curl -fsSL https://get.htcondor.org | /bin/bash -s -- --no-dry-run
+
+      # Stock HTCondor timing defaults (NEGOTIATOR_INTERVAL=60s in
+      # particular) are tuned for a real pool, not a single-node test
+      # instance -- a freshly submitted vanilla-universe job can sit idle
+      # for up to a minute waiting for the negotiator's own periodic cycle.
+      # These overrides are HTCondor's own Ornithology test framework's
+      # values (src/condor_tests/ornithology/condor.py's DEFAULT_PARAMS) --
+      # not correctness-affecting, just how often daemons poll/report/
+      # negotiate. Safe for a personal/test pool; never do this to a
+      # production pool. condor_restart picks up the new config.d file;
+      # LOCAL_CONFIG_DIR is queried rather than hardcoded in case a future
+      # HTCondor release changes the RPM's default layout.
+      - name: Tune HTCondor timing for fast tests
+        run: |
+          config_dir="$(condor_config_val LOCAL_CONFIG_DIR 2>/dev/null | awk '{print $1}')"
+          config_dir="${config_dir:-/etc/condor/config.d}"
+          mkdir -p "${config_dir}"
+          cat > "${config_dir}/99-fast-testing.conf" <<'EOF'
+          UPDATE_INTERVAL = 2
+          POLLING_INTERVAL = 2
+          NEGOTIATOR_INTERVAL = 2
+          NEGOTIATOR_MIN_INTERVAL = 2
+          NEGOTIATOR_CYCLE_DELAY = 2
+          SCHEDD_INTERVAL = 30
+          STARTER_UPDATE_INTERVAL = 2
+          STARTER_INITIAL_UPDATE_INTERVAL = 2
+          SHADOW_QUEUE_UPDATE_INTERVAL = 2
+          MachineMaxVacateTime = 2
+          RUNBENCHMARKS = 0
+          EOF
+          condor_restart
 
       # condor_master forks off the rest of the daemons asynchronously, so
       # give the schedd a moment to actually come up before trusting it.
@@ -78,5 +109,10 @@ jobs:
       # live_condor marker (auto-applied to any test using condor_schedd)
       # rather than by filename means a future test file gated on a live
       # Schedd gets picked up here automatically, with no workflow edit.
+      #
+      # -n auto (pytest-xdist) spreads all live_condor-marked items -- across
+      # every file, not just within one -- over worker processes; each test
+      # is mostly waiting on real daemon round trips, so this is a large win
+      # for real wall-clock time (see tests/README.md).
       - name: Run live-Schedd tests as submituser (must not skip)
-        run: su submituser -c "cd '${GITHUB_WORKSPACE}' && HTFLOW_REQUIRE_CONDOR=1 python3 -m pytest -m live_condor -v -ra"
+        run: su submituser -c "cd '${GITHUB_WORKSPACE}' && HTFLOW_REQUIRE_CONDOR=1 python3 -m pytest -m live_condor -n auto -v -ra"
