@@ -48,14 +48,28 @@ ATTR_MANAGER_ID = "ManagerId"
 JOB_EXIT_UNKNOWN = -1000
 JOB_EXIT_ABORTED = -1001
 
+def _effective_handlers(logger):
+    """Walk the logger hierarchy the way logging does when propagating,
+    yielding every handler that would actually see a record from `logger`."""
+    current = logger
+    while current is not None:
+        for handler in current.handlers:
+            yield handler
+        if not current.propagate:
+            break
+        current = current.parent
+
+
 @contextmanager
 def log_in_recovery_mode(logger):
     """Context manager to switch logger into recovery mode with prefix"""
     logger.debug("Entering recovery mode")
 
-    # Keep track of old formatters
+    # Keep track of old formatters. Handlers are typically attached to the
+    # root logger (see __main__.py) rather than this module's logger, so we
+    # must walk the propagation chain instead of only `logger.handlers`.
     old_formatters = []
-    for handler in logger.handlers:
+    for handler in _effective_handlers(logger):
         old_formatters.append((handler, handler.formatter))
         # Get existing format string or default
         old_fmt = handler.formatter._fmt if handler.formatter else '%(message)s'
