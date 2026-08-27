@@ -18,9 +18,11 @@ htflow/
 │   ├── cleanup/         # `htflow cleanup`
 │   ├── convert/         # `htflow convert`
 │   ├── execute/         # `htflow execute <engine>`
-│   └── show/            # `htflow show <view>` (itself a mini plugin system)
-│       ├── files.py      # view: files grouped by storage protocol
-│       └── types.py      # view: distinct JobType values
+│   ├── show/            # `htflow show <view>` (itself a mini plugin system)
+│   │   ├── files.py      # view: files grouped by storage protocol
+│   │   └── types.py      # view: distinct JobType values
+│   └── submit/          # `htflow submit <backend>` (see its own README.md)
+│       └── htcondor.py   # backend: submits `htflow execute <mode>` as an HTCondor job
 ├── engines/             # execution backends for `htflow execute`
 │   ├── __init__.py
 │   ├── engine.py         # abstract Engine base class + locking
@@ -53,16 +55,22 @@ htflow/
 
 Each `htflow <command>` is a subpackage exposing `add_parser(name, subparsers, common_parser)` and `run(...)`. `commands/__init__.py` auto-discovers them via `_discovery.discover()`, which walks the package directory and imports every submodule/subpackage **not** prefixed with `_` — so adding a new top-level command is just adding a new subpackage here with those two functions; no separate registration step.
 
+Each command directory has its own `README.md` covering its flags and behavior in more depth than the summaries below.
+
 | Package | Command | Purpose |
 |---|---|---|
-| `cleanup/` | `htflow cleanup` | Removes the engine working directory (`flowman/`); refuses while an engine holds the lock file. |
-| `convert/` | `htflow convert [FILE]` | Calls `HTCondorDataFlow.write()` to emit a DAGMan `.dag` file. |
-| `execute/` | `htflow execute <engine>` | Dynamically loads `htflow.engines.<name>` and runs its lifecycle (`Recover → Bootstrap → Execute/Update loop → Terminate`). Engine names are hardcoded in this package's `choices` list — adding an engine means updating both `engines/` and this list. |
-| `show/` | `htflow show <view>` | A second-level plugin system: discovers "view" modules under `show/` the same way `commands/` discovers commands. Each view needs only a `run(df, args)` function. |
+| [`cleanup/`](commands/cleanup/README.md) | `htflow cleanup` | Removes the engine working directory (`flowman/`); refuses while an engine holds the lock file. |
+| [`convert/`](commands/convert/README.md) | `htflow convert [FILE]` | Calls `HTCondorDataFlow.write()` to emit a DAGMan `.dag` file. |
+| [`execute/`](commands/execute/README.md) | `htflow execute <engine>` | Dynamically loads `htflow.engines.<name>` and runs its lifecycle (`Recover → Bootstrap → Execute/Update loop → Terminate`). Engine names are hardcoded in this package's `choices` list — adding an engine means updating both `engines/` and this list. |
+| [`show/`](commands/show/README.md) | `htflow show <view>` | A second-level plugin system: discovers "view" modules under `show/` the same way `commands/` discovers commands. Each view needs only a `run(df, args)` function. |
+| [`submit/`](commands/submit/README.md) | `htflow submit <backend>` | A different second-level plugin system: unlike `show/`'s flat-choice views, each backend gets its own real subparser (and therefore its own flags). |
 
 `show/`'s views:
 - **`files.py`** — groups tracked files by storage protocol (`cedar`, `osdf://`, `pelican://`, ...) and prints generation/consumer counts.
 - **`types.py`** — prints the distinct `JobType` values found across the given JDL files.
+
+`submit/`'s backends:
+- **`htcondor.py`** — submits `htflow execute <mode>` itself as an HTCondor job (`--mode manual`/`monitor`, `--no-shared-fs`, `--container`).
 
 ## `engines/` — Execution Backends
 
