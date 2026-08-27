@@ -33,4 +33,5 @@ create_test(test_execute.py)
 create_test(test_sources.py)
 create_test(test_naming.py)
 create_test(test_monitor.py)
+create_test(test_submit.py)
 
