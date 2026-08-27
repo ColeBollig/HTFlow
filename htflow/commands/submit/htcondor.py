@@ -227,4 +227,6 @@ def run(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
     schedd = htcondor2.Schedd()
     result = schedd.submit(desc)
 
+    schedd.reschedule()
+
     print(f"Submitted '{args.mode}' engine as HTCondor cluster {result.cluster()} ({desc.expand('universe')} universe)")

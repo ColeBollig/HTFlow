@@ -55,6 +55,14 @@ pytestmark = pytest.mark.usefixtures("condor_schedd")
 # task itself running and the schedd writing history.
 WATCHDOG_SECONDS = 150
 
+# Real Schedd round trips are much slower than local polling (see
+# test_execute.py's/test_monitor.py's own POLL_INTERVAL) -- no need to
+# hammer the daemon, but the default --interval (1.0s) means every test
+# pays at least one full second of pure sleep inside the wrapper job's own
+# engine loop for nothing. This is passed through as the inner `htflow
+# execute`'s own --interval, not a real Schedd polling rate.
+POLL_INTERVAL = "0.2"
+
 CLUSTER_RE = re.compile(r"cluster (\d+)")
 
 
@@ -86,6 +94,7 @@ def run_submit(*args, log_file, capsys):
         "--log-level", "DEBUG",
         "--log-file", str(log_file),
         "submit", "htcondor",
+        "--interval", POLL_INTERVAL,
         *args,
     ]
     with patch.object(sys, "argv", argv):
