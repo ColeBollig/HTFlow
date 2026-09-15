@@ -1061,6 +1061,7 @@ class TestResolveFrom:
 # End-to-end regression: larger/varied topologies built from real JDL inputs
 # ---------------------------------------------------------------------------
 
+@pytest.mark.regression
 class TestEndToEndTopologies:
     """High-level regression tests verifying generate()/write()/groupings/mapping
     all agree on the resulting DAG for larger, varied, and combined-feature inputs

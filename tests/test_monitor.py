@@ -221,6 +221,7 @@ class TestMonitorSingle:
         a = make_condor_jdl("a", task_id=1, exit_code=1)
         assert run_monitor("--jdl", str(a), log_file=htflow_log) == 1
 
+    @pytest.mark.regression
     def test_private_log_not_clobbered(self, make_condor_jdl, htflow_log, tmp_path):
         """The JDL's own `log` line must still receive events -- proving the
         shared dagman_log (SUBMIT_KEY_DagmanLogFile) is additive, not a

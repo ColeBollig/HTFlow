@@ -432,6 +432,7 @@ class TestSubmitHtcondorMonitor:
         assert inner_ads[0]["ExitCode"] == 1
         assert (tmp_path / "exec.log").read_text().strip() == "1"  # the task still ran once
 
+    @pytest.mark.regression
     def test_inner_job_tagged_with_manager_id(self, make_condor_jdl, htflow_log, capsys, condor_schedd):
         """Regression test for the manager_id/My.ManagerId str() fix in
         htflow/engines/monitor.py -- before that fix, assigning the raw int
