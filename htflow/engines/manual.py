@@ -20,12 +20,22 @@ from .. import dag
 from typing import Optional
 from pathlib import Path
 from time import time as now
+import os
 import subprocess
 import shlex
 import logging
 import htcondor2
 
 logger = logging.getLogger(__name__)
+
+
+def _split_arguments(args: str, *, windows: bool = (os.name == "nt")) -> list:
+    """Tokenize a JDL `arguments` value the way it should be launched on this
+    platform. shlex.split()'s default posix=True treats backslash as an
+    escape character -- correct on POSIX, wrong for a Windows-style path or
+    argument, which should pass through unmangled (posix=False)."""
+    return shlex.split(args, posix=not windows)
+
 
 class ManualNode(NodeInternal):
     def __init__(self, node: dag.Node, config: Optional[ExecutionConfig] = None) -> None:
@@ -48,7 +58,7 @@ class ManualNode(NodeInternal):
         if args.startswith('"') and args.endswith('"') and len(args) >= 2:
             args = args[1:-1].replace('""', '"')
 
-        cmd += shlex.split(args)
+        cmd += _split_arguments(args)
 
         logger.info("Executing: %s", " ".join(cmd))
 

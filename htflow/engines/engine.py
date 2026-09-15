@@ -16,9 +16,8 @@ from abc import ABC, abstractmethod
 from typing import Optional
 from pathlib import Path
 
-import fcntl
-
 from ..config import ExecutionConfig
+from ..utils.filelock import lock_exclusive_nonblocking, unlock
 
 
 class EngineExecutionError(Exception):
@@ -54,7 +53,7 @@ class Engine(ABC):
         if self._lock_fp is None:
             self._lock_fp = open(self.lock, "w")
             try:
-                fcntl.flock(self._lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_exclusive_nonblocking(self._lock_fp)
             except BlockingIOError:
                 self._lock_fp.close()
                 self._lock_fp = None
@@ -63,7 +62,7 @@ class Engine(ABC):
     def ReleaseLock(self) -> None:
         """Release execution file lock for another to execute"""
         if self._lock_fp:
-            fcntl.flock(self._lock_fp, fcntl.LOCK_UN)
+            unlock(self._lock_fp)
             self._lock_fp.close()
             self._lock_fp = None
 

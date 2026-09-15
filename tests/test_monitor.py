@@ -20,12 +20,10 @@
 
 import sys
 import time
-import signal
 import logging
 import threading
 import pytest
 from pathlib import Path
-from contextlib import contextmanager
 from unittest.mock import patch
 
 import htcondor2
@@ -34,8 +32,6 @@ from htflow.__main__ import main
 from htflow.utils.directory import ChangeDir
 from htflow.utils.naming import hash_name
 
-pytestmark = pytest.mark.usefixtures("condor_schedd")
-
 # Real Schedd round trips are much slower than manual.py's local subprocess
 # polling (test_execute.py uses 0.01s) -- no need to hammer the daemon.
 POLL_INTERVAL = "0.5"
@@ -43,28 +39,18 @@ POLL_INTERVAL = "0.5"
 # Hard ceiling on a single test's wall-clock time. This is new code talking
 # to a real daemon: if a bug reintroduces a hang (e.g. Terminate() never
 # seeing an empty active_nodes set), this turns it into a clean test failure
-# instead of hanging the whole CI job.
+# instead of hanging the whole CI job. Enforced via pytest-timeout (not a
+# signal.alarm()-based watchdog, which doesn't exist on Windows) using the
+# thread-based timeout method (see pyproject.toml's addopts), so it works
+# the same way on every platform.
 WATCHDOG_SECONDS = 90
+
+pytestmark = [pytest.mark.usefixtures("condor_schedd"), pytest.mark.timeout(WATCHDOG_SECONDS)]
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-@contextmanager
-def _watchdog(seconds):
-    """Hard-fail if the wrapped block doesn't finish within `seconds`."""
-    def _handler(signum, frame):
-        raise TimeoutError(f"monitor engine test exceeded its {seconds}s watchdog timeout")
-
-    old_handler = signal.signal(signal.SIGALRM, _handler)
-    signal.alarm(seconds)
-    try:
-        yield
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
-
 
 def run_monitor(*args, log_file, cwd=None):
     """Invoke `htflow execute monitor` with DEBUG logging to log_file.
@@ -81,17 +67,16 @@ def run_monitor(*args, log_file, cwd=None):
         "--interval", POLL_INTERVAL,
         *args,
     ]
-    with _watchdog(WATCHDOG_SECONDS):
-        with patch.object(sys, "argv", argv):
-            try:
-                if cwd is not None:
-                    with ChangeDir(cwd):
-                        main()
-                else:
+    with patch.object(sys, "argv", argv):
+        try:
+            if cwd is not None:
+                with ChangeDir(cwd):
                     main()
-                return 0
-            except SystemExit as e:
-                return e.code
+            else:
+                main()
+            return 0
+        except SystemExit as e:
+            return e.code
 
 
 def exec_order(exec_log_path):
@@ -357,9 +342,8 @@ class TestMonitorRecover:
 # evaluation cycle to fire (its interval isn't something this test controls,
 # and waiting it out would make this one test disproportionately slow) --
 # instead it forces the same real-world outcome (a held job getting removed)
-# as soon as the hold is observed, from a background thread. run_monitor()
-# itself still runs on the main thread, since its watchdog uses
-# signal.alarm(), which only works on the interpreter's main thread.
+# as soon as the hold is observed, from a background thread, while
+# run_monitor() itself blocks synchronously on the main thread.
 # ---------------------------------------------------------------------------
 
 class TestMonitorHeldJob:

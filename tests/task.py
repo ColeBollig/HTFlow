@@ -17,6 +17,7 @@
 # Appends its --id to --log, then exits with --exit-code.
 
 import argparse
+import os
 import sys
 
 parser = argparse.ArgumentParser()
@@ -25,7 +26,27 @@ parser.add_argument("--log",       default="exec.log")
 parser.add_argument("--exit-code", type=int, default=0, dest="exit_code")
 args = parser.parse_args()
 
-with open(args.log, "a") as f:
-    f.write(f"{args.id}\n")
+# Multiple task.py processes can append to the same --log concurrently.
+# POSIX's O_APPEND makes that atomic; Windows has no equivalent, so lock a
+# fixed sentinel byte at offset 0 (standalone, not importing filelock)
+# before seeking to the real end and writing.
+fd = os.open(args.log, os.O_CREAT | os.O_RDWR, 0o644)
+try:
+    if os.name == "nt":
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    os.lseek(fd, 0, os.SEEK_END)
+    os.write(fd, f"{args.id}\n".encode())
+finally:
+    if os.name == "nt":
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
 
 sys.exit(args.exit_code)

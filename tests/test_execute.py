@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import sys
-import fcntl
 import logging
 import pytest
 from pathlib import Path
@@ -22,8 +21,10 @@ from unittest.mock import patch
 from htflow.__main__ import main
 from htflow.config import ExecutionConfig
 from htflow.dataflow import HTCondorDataFlow
+from htflow.engines import manual as manual_engine_module
 from htflow.engines.manual import ManualEngine
 from htflow.utils.directory import ChangeDir
+from htflow.utils.filelock import lock_exclusive_nonblocking, unlock
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +78,7 @@ def task_script():
 def make_jdl(tmp_path, task_script):
     def _make(name, task_id, *, exit_code=0, inputs=None, outputs=None, log="exec.log"):
         lines = [
-            "executable = python3",
+            f"executable = {sys.executable}",
             f"arguments = {str(task_script)} --id {task_id} --log {log} --exit-code {exit_code}",
         ]
         if inputs:
@@ -316,11 +317,11 @@ class TestExecuteLocked:
         lock_file = flowman / "flowman.lock"
         lock_file.touch()
         fp = open(lock_file, "w")
-        fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_exclusive_nonblocking(fp)
         try:
             assert run_execute("--jdl", str(a), log_file=htflow_log) == 75
         finally:
-            fcntl.flock(fp, fcntl.LOCK_UN)
+            unlock(fp)
             fp.close()
 
 
@@ -333,7 +334,7 @@ class TestExecuteRelativeToSource:
         subdir.mkdir()
         jdl = subdir / "a.sub"
         jdl.write_text(
-            f"executable = python3\n"
+            f"executable = {sys.executable}\n"
             f"arguments = {task_script} --id 1 --log exec.log --exit-code 0\n"
             "queue\n"
         )
@@ -365,7 +366,7 @@ class TestExecuteResolveFrom:
         subdir.mkdir()
         jdl = subdir / "a.sub"
         jdl.write_text(
-            f"executable = python3\n"
+            f"executable = {sys.executable}\n"
             f"arguments = {task_script} --id 1 --log exec.log --exit-code 0\n"
             "queue\n"
         )
@@ -455,3 +456,27 @@ class TestManualEngineMaxActiveNodesCap:
         active, ready = self._bootstrap_and_execute_once(make_jdl, 0)
         assert active == 0
         assert ready == 5
+
+
+# ---------------------------------------------------------------------------
+# _split_arguments(): shlex.split()'s posix mode must match the platform
+# ---------------------------------------------------------------------------
+#
+# shlex.split()'s default posix=True treats backslash as an escape character
+# -- wrong for a Windows-style path/argument, which should pass through
+# unmangled. _split_arguments(windows=...) exercises both branches directly
+# rather than requiring an actual Windows runner or monkeypatching os.name
+# (which pathlib itself also consults, so patching it process-wide has
+# unrelated side effects on any Path() construction in the same test).
+
+class TestSplitArguments:
+    def test_windows_path_argument_preserves_backslashes(self):
+        cmd = manual_engine_module._split_arguments(r"C:\Users\foo\bar.txt", windows=True)
+        assert cmd == [r"C:\Users\foo\bar.txt"]
+
+    def test_posix_argument_still_processes_backslash_escapes(self):
+        """Unchanged existing (POSIX) behavior: shlex's posix=True mode still
+        treats a backslash as an escape character, e.g. joining an
+        escaped space into a single token."""
+        cmd = manual_engine_module._split_arguments(r"foo\ bar", windows=False)
+        assert cmd == ["foo bar"]

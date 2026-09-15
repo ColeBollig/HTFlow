@@ -33,6 +33,12 @@ def validate_hash_length(length: int) -> None:
 
 
 def hash_name(path: Union[Path, str], length: int = DEFAULT_HASH_LENGTH) -> str:
-    """Content-addressed name for a thing identified by `path`: the sha256 hex digest of `path`, truncated to `length` hex characters"""
+    """Content-addressed name for a thing identified by `path`: the sha256 hex digest of `path`, truncated to `length` hex characters
+
+    Hashes Path(path).as_posix() rather than str(Path(path)) so the same
+    logical path hashes identically regardless of the platform's native
+    separator -- on POSIX these two renderings are already identical for
+    every input, so this changes nothing for existing Linux/macOS callers.
+    """
     validate_hash_length(length)
-    return hashlib.sha256(str(Path(path)).encode("utf-8")).hexdigest()[:length]
+    return hashlib.sha256(Path(path).as_posix().encode("utf-8")).hexdigest()[:length]

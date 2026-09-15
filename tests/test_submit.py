@@ -33,7 +33,6 @@
 import sys
 import re
 import time
-import signal
 import logging
 import pytest
 from pathlib import Path
@@ -46,14 +45,21 @@ from htflow.__main__ import main
 from htflow.commands.submit import htcondor as submit_htcondor
 from htflow.engines.monitor import ATTR_MANAGER_ID
 
-pytestmark = pytest.mark.usefixtures("condor_schedd")
-
 # Generous hard ceiling, not the expected time (see test_monitor.py's own
 # WATCHDOG_SECONDS comment) -- --mode manual's wrapper job is vanilla
 # universe and needs a real matchmaking cycle against the pool's one slot,
 # which (observed locally) takes on the order of 10-20s, on top of the
-# task itself running and the schedd writing history.
+# task itself running and the schedd writing history. Used directly as
+# _wait_for_history()'s own per-call deadline (a plain time.time() polling
+# loop, unaffected by any of this).
 WATCHDOG_SECONDS = 150
+
+# A test typically does run_submit() then _wait_for_history() sequentially,
+# each individually bounded by WATCHDOG_SECONDS -- so the whole-test
+# pytest-timeout (which has to cover both phases together, unlike the old
+# per-call signal.alarm()-based watchdog that only ever wrapped run_submit())
+# needs double the budget to preserve the same worst-case slack.
+pytestmark = [pytest.mark.usefixtures("condor_schedd"), pytest.mark.timeout(WATCHDOG_SECONDS * 2)]
 
 # Real Schedd round trips are much slower than local polling (see
 # test_execute.py's/test_monitor.py's own POLL_INTERVAL) -- no need to
@@ -69,21 +75,6 @@ CLUSTER_RE = re.compile(r"cluster (\d+)")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-@contextmanager
-def _watchdog(seconds):
-    """Hard-fail if the wrapped block doesn't finish within `seconds`."""
-    def _handler(signum, frame):
-        raise TimeoutError(f"submit htcondor test exceeded its {seconds}s watchdog timeout")
-
-    old_handler = signal.signal(signal.SIGALRM, _handler)
-    signal.alarm(seconds)
-    try:
-        yield
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
-
 
 def run_submit(*args, log_file, capsys):
     """Invoke `htflow submit htcondor` (never --dry-run here) with DEBUG
@@ -154,6 +145,11 @@ def task_script():
     return Path(__file__).parent / "task.py"
 
 
+@pytest.fixture(scope="session")
+def cat_script():
+    return Path(__file__).parent / "cat_files.py"
+
+
 @pytest.fixture
 def make_jdl(tmp_path, task_script):
     """A leaf JDL for --mode manual: never touches real HTCondor itself --
@@ -210,10 +206,10 @@ def isolated_workdir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def manual_mode_getenv(monkeypatch):
-    """Test-only: --mode manual's shipped default sets no getenv (assumes
-    the target pool provides PATH itself). This dev pool's job environment
-    has no PATH either, so inject one here purely so these tests can find
-    'htflow' -- does NOT change the shipped default."""
+    """Test-only: --no-shared-fs sets no getenv by design (a genuinely
+    different execute node), but this dev pool's job env still needs
+    PYTHONPATH/CONDOR_CONFIG -- inject them here without changing the
+    shipped default."""
     original = submit_htcondor._vanilla_universe_defaults
 
     def patched(args, df):
@@ -225,15 +221,15 @@ def manual_mode_getenv(monkeypatch):
 
 
 @pytest.fixture
-def make_transfer_jdl(tmp_path):
-    """A leaf JDL for --no-shared-fs tests: 'cat's its input file(s) into a
-    single output file, so the wrapper job's own transfer_input_files /
+def make_transfer_jdl(tmp_path, cat_script):
+    """A leaf JDL for --no-shared-fs tests: concatenates its input file(s)
+    into a single output file (via cat_files.py -- '/bin/sh -c' doesn't
+    exist on Windows), so the wrapper job's own transfer_input_files /
     transfer_output_files round-trip is exercised end-to-end."""
     def _make(name, *, inputs, output, exit_code=0, directory=None):
-        cat = " ".join(inputs)
         lines = [
-            "executable = /bin/sh",
-            f"arguments = \"-c 'cat {cat} > {output} && exit {exit_code}'\"",
+            f"executable = {sys.executable}",
+            f"arguments = {cat_script} {output} {exit_code} {' '.join(inputs)}",
             f"transfer_input_files = {','.join(inputs)}",
             f"transfer_output_files = {output}",
             "queue",
@@ -265,12 +261,10 @@ def reset_logging():
 # --mode manual: vanilla-universe wrapper, no leaf-level HTCondor submission
 # ---------------------------------------------------------------------------
 
-@pytest.mark.usefixtures("manual_mode_getenv")
 class TestSubmitHtcondorManual:
     def test_success(self, make_jdl, tmp_path, htflow_log, capsys, condor_schedd):
         a = make_jdl("a", task_id=1)
-        with _watchdog(WATCHDOG_SECONDS):
-            code, out = run_submit("--jdl", str(a), "--mode", "manual", log_file=htflow_log, capsys=capsys)
+        code, out = run_submit("--jdl", str(a), "--mode", "manual", log_file=htflow_log, capsys=capsys)
         assert code == 0
 
         cluster_id = _submitted_cluster_id(out)
@@ -286,8 +280,7 @@ class TestSubmitHtcondorManual:
 
     def test_failure(self, make_jdl, tmp_path, htflow_log, capsys, condor_schedd):
         a = make_jdl("a", task_id=1, exit_code=1)
-        with _watchdog(WATCHDOG_SECONDS):
-            code, out = run_submit("--jdl", str(a), "--mode", "manual", log_file=htflow_log, capsys=capsys)
+        code, out = run_submit("--jdl", str(a), "--mode", "manual", log_file=htflow_log, capsys=capsys)
         # 'submit' itself only launches the job -- it succeeds regardless of
         # whether the engine it launches goes on to fail.
         assert code == 0
@@ -314,8 +307,7 @@ class TestSubmitHtcondorNoSharedFs:
         (tmp_path / "ext.txt").write_text("hello from root\n")
         a = make_transfer_jdl("a", inputs=["ext.txt"], output="out.txt")
 
-        with _watchdog(WATCHDOG_SECONDS):
-            code, out = run_submit("--jdl", str(a), "--mode", "manual", "--no-shared-fs", log_file=htflow_log, capsys=capsys)
+        code, out = run_submit("--jdl", str(a), "--mode", "manual", "--no-shared-fs", log_file=htflow_log, capsys=capsys)
         assert code == 0
 
         cluster_id = _submitted_cluster_id(out)
@@ -333,8 +325,7 @@ class TestSubmitHtcondorNoSharedFs:
         (tmp_path / "ext.txt").write_text("hello\n")
         a = make_transfer_jdl("a", inputs=["ext.txt"], output="out.txt", exit_code=1)
 
-        with _watchdog(WATCHDOG_SECONDS):
-            code, out = run_submit("--jdl", str(a), "--mode", "manual", "--no-shared-fs", log_file=htflow_log, capsys=capsys)
+        code, out = run_submit("--jdl", str(a), "--mode", "manual", "--no-shared-fs", log_file=htflow_log, capsys=capsys)
         assert code == 0
 
         cluster_id = _submitted_cluster_id(out)
@@ -352,8 +343,7 @@ class TestSubmitHtcondorNoSharedFs:
         a = make_transfer_jdl("a", inputs=["ext.txt"], output="mid.txt")
         b = make_transfer_jdl("b", inputs=["mid.txt"], output="final.txt")
 
-        with _watchdog(WATCHDOG_SECONDS):
-            code, out = run_submit("--jdl", str(a), str(b), "--mode", "manual", "--no-shared-fs", log_file=htflow_log, capsys=capsys)
+        code, out = run_submit("--jdl", str(a), str(b), "--mode", "manual", "--no-shared-fs", log_file=htflow_log, capsys=capsys)
         assert code == 0
 
         cluster_id = _submitted_cluster_id(out)
@@ -364,20 +354,19 @@ class TestSubmitHtcondorNoSharedFs:
         assert (tmp_path / "final.txt").read_text() == "root content\n"
         assert not (tmp_path / "mid.txt").exists()  # never declared for transfer back
 
-    def test_works_with_dir_input(self, tmp_path, htflow_log, capsys, condor_schedd):
+    def test_works_with_dir_input(self, tmp_path, htflow_log, capsys, condor_schedd, cat_script):
         jobs = tmp_path / "jobs"
         jobs.mkdir()
         (tmp_path / "ext.txt").write_text("via --dir\n")
         (jobs / "a.sub").write_text(
-            "executable = /bin/sh\n"
-            "arguments = \"-c 'cat ext.txt > out.txt'\"\n"
+            f"executable = {sys.executable}\n"
+            f"arguments = {cat_script} out.txt 0 ext.txt\n"
             "transfer_input_files = ext.txt\n"
             "transfer_output_files = out.txt\n"
             "queue\n"
         )
 
-        with _watchdog(WATCHDOG_SECONDS):
-            code, out = run_submit("--dir", "jobs", "--mode", "manual", "--no-shared-fs", log_file=htflow_log, capsys=capsys)
+        code, out = run_submit("--dir", "jobs", "--mode", "manual", "--no-shared-fs", log_file=htflow_log, capsys=capsys)
         assert code == 0
 
         cluster_id = _submitted_cluster_id(out)
@@ -395,8 +384,7 @@ class TestSubmitHtcondorNoSharedFs:
 class TestSubmitHtcondorMonitor:
     def test_success(self, make_condor_jdl, tmp_path, htflow_log, capsys, condor_schedd):
         a = make_condor_jdl("a", task_id=1)
-        with _watchdog(WATCHDOG_SECONDS):
-            code, out = run_submit("--jdl", str(a), "--mode", "monitor", log_file=htflow_log, capsys=capsys)
+        code, out = run_submit("--jdl", str(a), "--mode", "monitor", log_file=htflow_log, capsys=capsys)
         assert code == 0
 
         cluster_id = _submitted_cluster_id(out)
@@ -418,8 +406,7 @@ class TestSubmitHtcondorMonitor:
 
     def test_failure(self, make_condor_jdl, tmp_path, htflow_log, capsys, condor_schedd):
         a = make_condor_jdl("a", task_id=1, exit_code=1)
-        with _watchdog(WATCHDOG_SECONDS):
-            code, out = run_submit("--jdl", str(a), "--mode", "monitor", log_file=htflow_log, capsys=capsys)
+        code, out = run_submit("--jdl", str(a), "--mode", "monitor", log_file=htflow_log, capsys=capsys)
         assert code == 0
 
         cluster_id = _submitted_cluster_id(out)
@@ -440,8 +427,7 @@ class TestSubmitHtcondorMonitor:
         the inner job was never submitted at all (wrapper ExitCode == 1,
         zero inner history ads)."""
         a = make_condor_jdl("a", task_id=1)
-        with _watchdog(WATCHDOG_SECONDS):
-            code, out = run_submit("--jdl", str(a), "--mode", "monitor", log_file=htflow_log, capsys=capsys)
+        code, out = run_submit("--jdl", str(a), "--mode", "monitor", log_file=htflow_log, capsys=capsys)
         assert code == 0
 
         cluster_id = _submitted_cluster_id(out)
