@@ -106,4 +106,16 @@ Run `htflow cleanup` to remove this directory once a workflow is complete.
 
 ---
 
+## Platform Support
+
+HTFlow runs on Linux, macOS, and Windows. Every command depends on the `htcondor2`/`classad2` bindings — including `convert`/`show`, which only use them to parse JDL files, not to talk to a live Schedd — so they must be importable before anything works:
+
+- **Linux**: `pip install htflow[htcondor]` (PyPI publishes `manylinux` wheels).
+- **macOS**: no PyPI wheel is published; install HTCondor separately if you need the real bindings, or let the test suite's own mock stub stand in (see [`tests/README.md`](tests/README.md)).
+- **Windows**: no PyPI wheel either — install HTCondor's own `.msi` (see [the HTCondor manual](https://htcondor.readthedocs.io/en/latest/apis/python-bindings/install.html)) and add its `lib\python` directory (e.g. `C:\condor\lib\python`) to `PYTHONPATH`.
+
+On Windows specifically, `execute manual` also can't launch a POSIX shell script directly — Windows has no shebang-line/executable-bit interpretation, so a JDL with `executable = foo.sh` won't run without WSL/Git-Bash/Cygwin on `PATH`. Use a `.exe`/`.bat`/`.py` executable (or an interpreter as the executable with the script as an argument, the way this project's own test fixtures do) for `manual`-engine JDLs you intend to run natively on Windows.
+
+---
+
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and running tests.

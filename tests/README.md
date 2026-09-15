@@ -9,11 +9,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-Install the package in editable mode along with `pytest`:
+Install the package in editable mode along with `pytest` and `pytest-timeout` (required -- `test_monitor.py`/`test_submit.py` use it as a hang-safety watchdog around real Schedd calls):
 
 ```sh
 pip install -e .
-pip install pytest
+pip install pytest pytest-timeout
 ```
 
 > **Note:** Some tests exercise the real `htcondor` Python package. It only publishes Linux wheels (no arm64 macOS build), so install it where available:
@@ -49,7 +49,7 @@ Run a specific test by name:
 ctest -R test_change_directory
 ```
 
-CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_config`, `test_execute`, `test_sources`, `test_naming`, `test_monitor`, `test_submit`. `test_monitor` and `test_submit` both skip gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
+CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_config`, `test_execute`, `test_filelock`, `test_sources`, `test_naming`, `test_monitor`, `test_submit`. `test_monitor` and `test_submit` both skip gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
 
 Each `ctest` target also carries a `LABELS` property mirroring the pytest markers below, so you can filter by category instead of by name. Labels are per-file, since `ctest` targets are whole files:
 
@@ -57,7 +57,7 @@ Each `ctest` target also carries a `LABELS` property mirroring the pytest marker
 |---|---|
 | `test_monitor`, `test_submit` | `integration;live;condor;slow` |
 | `test_dataflow` | `unit;regression;fast` |
-| the other 7 | `unit;fast` |
+| the other 8 | `unit;fast` |
 
 ```sh
 ctest -L unit               # every file except test_monitor/test_submit
@@ -91,7 +91,7 @@ pytest test_change_directory.py -v
 
 ### `test_monitor.py` / `test_submit.py` (require a live HTCondor Schedd)
 
-`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. `test_submit.py` does the same for `htflow submit htcondor`: it submits the real wrapper job (`--mode manual` as vanilla universe, `--mode monitor` as local universe) and, for `--mode monitor`, the real inner job the wrapper itself submits, then reads both jobs' actual `ExitCode` back from `condor_schedd.history()` rather than from `htflow submit`'s own process exit code (which only reflects the submission succeeding, not the job's eventual result). If no Schedd is found either file **skips** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead. `.github/workflows/live-condor-tests.yml` does exactly this: it installs and starts a real `minicondor` on AlmaLinux 10, then runs with the env var set so a broken/missing Schedd fails CI instead of silently skipping the tests:
+`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. `test_submit.py` does the same for `htflow submit htcondor`: it submits the real wrapper job (`--mode manual` as vanilla universe, `--mode monitor` as local universe) and, for `--mode monitor`, the real inner job the wrapper itself submits, then reads both jobs' actual `ExitCode` back from `condor_schedd.history()` rather than from `htflow submit`'s own process exit code (which only reflects the submission succeeding, not the job's eventual result). If no Schedd is found either file **skips** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead. `.github/workflows/live-condor-tests.yml` does exactly this on two real pools, so a broken/missing Schedd fails CI instead of silently skipping the tests: a `minicondor` on AlmaLinux 10, and a personal HTCondor pool installed via the Windows MSI on `windows-latest`.
 
 ```sh
 HTFLOW_REQUIRE_CONDOR=1 pytest tests/test_monitor.py tests/test_submit.py -q

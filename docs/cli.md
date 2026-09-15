@@ -134,7 +134,7 @@ Submit the workflow as a managed job to the given backend, rather than executing
 Submits an HTCondor job that itself runs `htflow execute <mode>` against the same dataflow, instead of running the engine in the current process:
 
 ```
-htflow submit htcondor --mode manual --jdl a.sub b.sub [--interval SECONDS] [--dry-run]
+htflow submit htcondor --mode manual --jdl a.sub b.sub [--interval SECONDS] [--no-shared-fs] [--container IMAGE] [--dry-run]
 htflow submit htcondor --mode monitor --dir ./jobs/ [--interval SECONDS] [--dry-run]
 ```
 
@@ -142,18 +142,20 @@ htflow submit htcondor --mode monitor --dir ./jobs/ [--interval SECONDS] [--dry-
 |---|---|
 | `--mode {manual,monitor}` | **Required.** Which engine to run inside the submitted job — `manual` runs as a **vanilla** universe job; `monitor` runs as a **local** universe job (so it runs on the submit machine itself and, via `_CONDOR_JOB_AD`, tags every job it in turn submits with `My.ManagerId` set to its own `ClusterId` — see [`docs/engines.md`](engines.md#monitorengine)). |
 | `--interval SECONDS` | Polling interval passed through to the inner `htflow execute` (default: `1.0`) |
+| `--no-shared-fs` | `--mode manual` only. Don't assume a shared filesystem with the execute node: really transfers root/JDL/job-shapes files in and leaf files + `flowman/` back out via `transfer_input_files`/`transfer_output_files`, instead of assuming they're already there. |
+| `--container IMAGE` | `--mode manual` only. Sets `container_image`, making the job a container job. |
 | `--dry-run` | Print the generated HTCondor submit description instead of submitting it |
 
-Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) and [Path Resolution Flags](#path-resolution-flags), forwarded to the inner `htflow execute <mode>` invocation exactly as given (all `--jdl`/`--dir`-resolved files are passed through as absolute paths, regardless of `--relative-to-source`/`--resolve-from`, so the submitted job doesn't depend on its own working directory to find them).
+Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) and [Path Resolution Flags](#path-resolution-flags), forwarded to the inner `htflow execute <mode>` invocation exactly as given (all `--jdl`/`--dir`-resolved files are passed through as absolute paths — or, under `--no-shared-fs`, their transferred basenames — so the submitted job doesn't depend on its own working directory to find them).
 
-The generated submit description resolves the `htflow` executable via `PATH` (`shutil.which`). Everything else about the job's execution environment is assembled per mode (`htflow/commands/submit/htcondor.py`'s `MODE_DEFAULTS`), not uniformly, because the two universes give different guarantees:
+The generated submit description runs `python -m htflow execute <mode> ...` (`executable` resolved via `PATH` to the `python`/`python3` interpreter, not the `htflow` console-script entry point itself — that's a POSIX shebang script vs. a compiled `.exe` launcher on Windows, while `python -m htflow` means the same thing on both). Everything else about the job's execution environment is assembled per mode (`htflow/commands/submit/htcondor.py`'s `MODE_DEFAULTS`), not uniformly, because the two universes give different guarantees:
 
-- **`monitor`** (`_local_universe_defaults()`): local universe runs on the AP by construction — always the same host as `htflow submit` itself. `should_transfer_files = NO`, `transfer_executable = false`, and `initialdir` set to the submitting directory are simply facts about local universe, not assumptions. `getenv` also includes `CONDOR_CONFIG`, since `MonitorEngine` talks to a live `htcondor2.Schedd()`.
-- **`manual`** (`_vanilla_universe_defaults()`): vanilla universe is matched to whatever execute node satisfies `requirements`, with no guarantee it resembles the submit machine. The same `should_transfer_files`/`transfer_executable`/`initialdir` settings are used, but here they're an *assumption* that the pool shares a filesystem and environment with the submit host (true on CHTC's own pools, not guaranteed in general — a non-shared-filesystem pool would need real `transfer_input_files`/container-based delivery instead, which this command doesn't currently do). `ManualEngine` never talks to a live Schedd, so `CONDOR_CONFIG` is left out of `getenv`.
+- **`monitor`** (`_local_universe_defaults()`): local universe runs on the AP by construction — always the same host as `htflow submit` itself. `should_transfer_files = NO`, `transfer_executable = false`, and `initialdir` set to the submitting directory are simply facts about local universe, not assumptions.
+- **`manual`** (`_vanilla_universe_defaults()`): vanilla universe is matched to whatever execute node satisfies `requirements`, with no guarantee it resembles the submit machine. Its default branch uses the same settings, but here they're an *assumption* that the pool shares a filesystem and environment with the submit host (true on CHTC's own pools, not guaranteed in general). `--no-shared-fs` opts out of that assumption instead.
 
-Both modes' `getenv` is a scoped list (not `getenv = true`), loosely mirroring DAGMan's own manager-job `getenv` filter (`src/condor_utils/dagman_utils.cpp`). Prints the submitted cluster id on success.
+Both universes need `htcondor2`/`classad2` importable inside the submitted job itself (to parse the inner JDL, or to talk to a live `htcondor2.Schedd()`), so whenever the job is guaranteed to run in the submitter's own environment — always for `monitor`, and for `manual` outside `--no-shared-fs` — a scoped `getenv` (not `getenv = true`) forwards `CONDOR_CONFIG`/`PYTHONPATH`/`PATH`/etc, loosely mirroring DAGMan's own manager-job `getenv` filter (`src/condor_utils/dagman_utils.cpp`). `--no-shared-fs` forwards none of it: a genuinely different execute node shouldn't inherit the submit host's own config/bindings paths. Prints the submitted cluster id on success.
 
-If `htflow` cannot be found on `PATH`, or the dataflow itself is invalid (same checks as `execute`/`convert`), the command exits with code **125** before ever touching the schedd.
+If no `python`/`python3` can be found on `PATH`, or the dataflow itself is invalid (same checks as `execute`/`convert`), the command exits with code **125** before ever touching the schedd.
 
 ---
 
