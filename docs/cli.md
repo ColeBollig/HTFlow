@@ -102,15 +102,16 @@ If a job-type shape or `--resolve-from` changes a node's transfer lists, `conver
 Execute the dataflow using the specified engine.
 
 ```
-htflow execute manual --jdl a.sub b.sub [--interval SECONDS]
+htflow execute manual --jdl a.sub b.sub [--interval SECONDS] [--max-active-nodes N]
 htflow execute manual --dir ./jobs/
-htflow execute monitor --jdl a.sub b.sub [--interval SECONDS]
+htflow execute monitor --jdl a.sub b.sub [--interval SECONDS] [--max-active-nodes N]
 ```
 
 | Argument | Description |
 |---|---|
 | `ENGINE` | Engine to use — `manual` (local subprocesses) or `monitor` (submits to a local HTCondor Schedd and watches it) — see [`docs/engines.md`](engines.md) |
 | `--interval SECONDS` | Polling interval in seconds (default: `1.0`) |
+| `--max-active-nodes N` | Maximum number of nodes actively executing at once, enforced identically by every engine (default: `100`). `-1` = unlimited, `0` = execute no nodes, `N` = cap at `N`. Any other value (e.g. a value below `-1`) exits with code **2**. See [`docs/config.md`](config.md) / [`docs/engines.md`](engines.md). |
 
 Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) flag.
 

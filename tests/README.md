@@ -49,7 +49,7 @@ Run a specific test by name:
 ctest -R test_change_directory
 ```
 
-CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_execute`, `test_sources`, `test_naming`, `test_monitor`, `test_submit`. `test_monitor` and `test_submit` both skip gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
+CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_config`, `test_execute`, `test_sources`, `test_naming`, `test_monitor`, `test_submit`. `test_monitor` and `test_submit` both skip gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
 
 Each `ctest` target also carries a `LABELS` property mirroring the pytest markers below, so you can filter by category instead of by name. Labels are per-file, since `ctest` targets are whole files:
 
@@ -57,7 +57,7 @@ Each `ctest` target also carries a `LABELS` property mirroring the pytest marker
 |---|---|
 | `test_monitor`, `test_submit` | `integration;live;condor;slow` |
 | `test_dataflow` | `unit;regression;fast` |
-| the other 6 | `unit;fast` |
+| the other 7 | `unit;fast` |
 
 ```sh
 ctest -L unit               # every file except test_monitor/test_submit

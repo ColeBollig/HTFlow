@@ -142,8 +142,13 @@ class ManualEngine(Engine):
     def Execute(self) -> None:
         """Manual dataflow execute of nodes"""
         attempted = list()
+        limit = self.config.max_active_nodes
 
-        for i in self._dag.internal.ready_nodes:
+        for idx, i in enumerate(self._dag.internal.ready_nodes):
+            if limit != -1 and len(self._dag.internal.active_nodes) >= limit:
+                logger.debug("Max limit of active nodes %d reached: Deferring execution of %d nodes", limit, len(self._dag.internal.ready_nodes) - idx)
+                break
+
             attempted.append(i)
 
             node = self._dag[i]
@@ -183,7 +188,7 @@ class ManualEngine(Engine):
     def Terminate(self) -> Optional[int]:
         """Manual dataflow termination check"""
         # Quick check for we are running things still so don't terminate
-        if len(self._dag.internal.ready_nodes) > 0 or len(self._dag.internal.active_nodes) > 0:
+        if len(self._dag.internal) > 0:
             return None
 
         success = True

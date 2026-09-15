@@ -174,6 +174,10 @@ class DagInternal(ABC):
     def __repr__(self) -> str:
         return self.__class__.__name__
 
+    def __len__(self) -> int:
+        """Get number of ready/active nodes"""
+        return len(self._active_nodes) + len(self._ready_nodes)
+
     @property
     def ready_nodes(self) -> Set[int]:
         """Get set of ready nodes by node id"""

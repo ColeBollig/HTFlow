@@ -156,6 +156,7 @@ Initializes `ready_nodes`/`active_nodes` as empty sets.
 |-----------------------|-----------------------------------------------------------------------------------------------------|
 | `prepare(node)`      | Adds `node.id` to `ready_nodes`, logs it, then calls the abstract `_prepare(node)` hook             |
 | `_prepare(node)`     | **Abstract.** Engine-specific per-node preparation — both current engines just set `node.internal.state = NodeState.READY` |
+| `__len__()`          | `len(ready_nodes) + len(active_nodes)` — used by `Terminate()` as a single "still have work outstanding" check |
 
 `Bootstrap()` (on both `ManualEngine` and `MonitorEngine`) calls `dag.internal.prepare(node)` for each blocked root node; `NodeInternal.Done()` calls it again for any child that becomes newly unblocked.
 
@@ -202,7 +203,7 @@ Transitions all root nodes (nodes with no parents, and not already marked `SUCCE
 
 #### `Execute()`
 
-Launches a subprocess for every node currently in the `READY` state. Each task's `executable`/`arguments` are read from its JDL and spawned via `subprocess.Popen`. Directory behavior depends only on `config.relative_to_source` — `config.resolve_from` never changes a task's working directory:
+Launches a subprocess for every node currently in the `READY` state, up to `config.max_active_nodes` simultaneously-`ACTIVE` nodes — once that many are active, the rest of `ready_nodes` is left alone until a future `Execute()` call (after `Update()` has freed up capacity). `-1` disables the cap entirely; `0` launches nothing. See [`docs/config.md`](config.md#executionconfig). Each task's `executable`/`arguments` are read from its JDL and spawned via `subprocess.Popen`. Directory behavior depends only on `config.relative_to_source` — `config.resolve_from` never changes a task's working directory:
 
 - **`relative_to_source=False` (default, including when `resolve_from` is set)** — no directory change occurs; the task inherits HTFlow's own current working directory, so relative paths in the submit file resolve against wherever HTFlow was invoked from, not against the JDL's own directory. If `resolve_from` was set, any relative `transfer_input_files`/`transfer_output_files` entries were already rewritten to absolute paths during `__resolve()` (see [`docs/dataflow.md`](dataflow.md#job-type-shapes) / [`docs/config.md`](config.md)), so this JDL is whatever `HTCondorDataFlow.generate()` produced — the original file, or a `.resolved` copy.
 - **`relative_to_source=True`** — the task is run with the JDL's own parent directory as its working directory (via `ChangeDir`), matching the JDL-colocated behavior.
@@ -314,7 +315,7 @@ Same as `ManualEngine.Bootstrap()`: transitions blocked root nodes to `READY` vi
 
 #### `Execute()`
 
-Submits every node in `ready_nodes`, moving each to `active_nodes` on success. A submission failure (raised exception, not a subsequent job-level failure) immediately fails that node and orphans its children, matching `ManualEngine`. See [Job submission](#job-submission) above for what happens per node, and the `reschedule()` note for why it's called once per batch.
+Submits nodes from `ready_nodes`, moving each to `active_nodes` on success — capped at `config.max_active_nodes` simultaneously-`ACTIVE` nodes, exactly like `ManualEngine.Execute()` (see [`docs/config.md`](config.md#executionconfig)); any nodes left over once the cap is hit are submitted on a future `Execute()` call instead. A submission failure (raised exception, not a subsequent job-level failure) immediately fails that node and orphans its children, matching `ManualEngine`. See [Job submission](#job-submission) above for what happens per node, and the `reschedule()` note for why it's called once per batch.
 
 #### `Update()`
 

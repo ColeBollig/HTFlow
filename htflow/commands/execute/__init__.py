@@ -23,6 +23,7 @@ import sys
 import textwrap
 import time
 
+from htflow.config import DEFAULT_MAX_ACTIVE_NODES
 from htflow.dataflow import HTCondorDataFlow
 from htflow.engines.engine import Engine, EngineExecutionError
 from htflow.exit_codes import EXIT_SETUP_FAILURE, EXIT_ENGINE_ACTIVE
@@ -91,6 +92,18 @@ def add_parser(name: str, subparsers: argparse._SubParsersAction, common_parser:
         default=1.0,
         metavar="SECONDS",
         help="Polling interval in seconds (default: 1.0)"
+    )
+    exec_p.add_argument(
+        "--max-active-nodes",
+        dest="max_active_nodes",
+        type=int,
+        default=DEFAULT_MAX_ACTIVE_NODES,
+        metavar="N",
+        help=(
+            "Maximum number of nodes actively executing at once, applied by "
+            "every engine (default: %(default)s). -1 = unlimited, "
+            "0 = execute no nodes, N = limit to N"
+        ),
     )
     return exec_p
 

@@ -3,14 +3,15 @@
 Runs the dataflow directly in the current process, using one of two engines. (To run it as a *submitted* HTCondor job instead, see [`../submit/README.md`](../submit/README.md).)
 
 ```
-htflow execute manual --jdl a.sub b.sub [--interval SECONDS]
-htflow execute monitor --dir ./jobs/ [--interval SECONDS]
+htflow execute manual --jdl a.sub b.sub [--interval SECONDS] [--max-active-nodes N]
+htflow execute monitor --dir ./jobs/ [--interval SECONDS] [--max-active-nodes N]
 ```
 
 | Argument | Description |
 |---|---|
 | `engine` (positional, required) | `manual` — spawn each ready node as a local subprocess. `monitor` — submit each ready node to a local HTCondor Schedd and watch it. |
 | `--interval SECONDS` | Polling interval between `Execute()`/`Update()` cycles (default: `1.0`) |
+| `--max-active-nodes N` | Cap on simultaneously-`ACTIVE` nodes, enforced identically by both engines (default: `100`). `-1` = unlimited, `0` = execute no nodes, `N` = cap at `N`; anything else exits **2**. |
 
 Also accepts every `common_parser` flag — `--jdl`/`--dir`, `--job-shapes`, `--relative-to-source`/`--resolve-from`, `--node-name-length`; see [`docs/cli.md`](../../../docs/cli.md) for the full reference.
 

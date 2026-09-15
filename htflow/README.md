@@ -46,7 +46,7 @@ htflow/
 | Module | Responsibility |
 |---|---|
 | `__main__.py` | CLI entry point. Builds the top-level `argparse` parser, registers one subparser per command discovered in `commands.COMMANDS`, resolves input files via `sources.collect_jdl_files`, builds `ExecutionConfig` + `HTCondorDataFlow`, and dispatches to the selected command's `run()`. Installed as the `htflow` console script (see `pyproject.toml`'s `[project.scripts]`), and also runnable as `python -m htflow`. |
-| `config.py` | `ExecutionConfig` — a frozen dataclass holding settings (`relative_to_source`, `resolve_from`, `node_name_length`) that are threaded through `HTCondorDataFlow`, engines, and nodes, so new behavior flags don't require touching every constructor. |
+| `config.py` | `ExecutionConfig` — a frozen dataclass holding settings (`relative_to_source`, `resolve_from`, `node_name_length`, `max_active_nodes`) that are threaded through `HTCondorDataFlow`, engines, and nodes, so new behavior flags don't require touching every constructor. |
 | `dag.py` | Generic, engine-agnostic DAG: `Node` (id, parent/child sets, an opaque `internal` slot for engine-specific payloads) and `Dag` (add/connect nodes, BFS/DFS `Walk`, `Cycle()` detection). Has no HTCondor-specific logic. |
 | `dataflow.py` | The core translation layer. `HTCondorDataFlow` reads a set of HTCondor submit (JDL) files, infers producer→consumer relationships from `transfer_input_files`/`transfer_output_files`, builds a `dag.Dag`, and can `write()` a DAGMan `.dag` file or `generate()` an in-memory DAG for engines. Enforces a documented set of assumptions (see `docs/dataflow.md`) via `AssumptionError`. |
 | `exit_codes.py` | Named process exit codes shared across commands/engines (`EXIT_SETUP_FAILURE`, `EXIT_ENGINE_ACTIVE`). |

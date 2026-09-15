@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Tuple, Callable
 
 from htflow.dataflow import HTCondorDataFlow, AssumptionError
-from htflow.config import ExecutionConfig
+from htflow.config import ExecutionConfig, DEFAULT_MAX_ACTIVE_NODES, validate_max_active_nodes
 from htflow.sources import collect_jdl_files, InputError
 from htflow.exit_codes import EXIT_SETUP_FAILURE
 from htflow.utils.naming import DEFAULT_HASH_LENGTH, validate_hash_length
@@ -184,6 +184,12 @@ def parse_args() -> Tuple[argparse.Namespace, Callable[[HTCondorDataFlow, argpar
         except ValueError as e:
             parser.error(f"--node-name-length: {e}")
 
+    if hasattr(args, "max_active_nodes"):
+        try:
+            validate_max_active_nodes(args.max_active_nodes)
+        except ValueError as e:
+            parser.error(f"--max-active-nodes: {e}")
+
     if args.command not in commands.CMD_TO_FUNCTION:
         parser.print_help()
         sys.exit(EXIT_SETUP_FAILURE)
@@ -214,6 +220,7 @@ def main() -> None:
             relative_to_source=args.relative_to_source,
             resolve_from=args.resolve_from,
             node_name_length=args.node_name_length,
+            max_active_nodes=getattr(args, "max_active_nodes", DEFAULT_MAX_ACTIVE_NODES),
         )
         df = HTCondorDataFlow(files=args.jdl, config=config)
         if args.job_shapes:
