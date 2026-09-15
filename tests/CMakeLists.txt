@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.14)
-project(dataflow2dag LANGUAGES NONE)
+project(htflow-tests
+        VERSION 1.0.0
+        DESCRIPTION "Test suite (unit and regression) for HTFLow functionality"
+        LANGUAGES NONE)
+
+message(STATUS "Project Name--------:  ${PROJECT_NAME}")
+message(STATUS "Project Version-----:  ${PROJECT_VERSION}")
+message(STATUS "Project Description-:  ${PROJECT_DESCRIPTION}")
+message(STATUS "")
 
 enable_testing()
 
