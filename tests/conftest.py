@@ -162,21 +162,14 @@ def condor_schedd():
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-tag every test along four axes -- kind (unit/regression/integration),
-    liveness (live), backend (condor), and speed (fast/slow) -- so a new test
-    file gets sensible default tags for free, without anyone having to
-    remember to mark it by hand.
+    """Auto-tag every test along four axes: kind (unit/regression/integration),
+    liveness (live), backend (condor), and speed (fast/slow).
 
-    - Any test using condor_schedd (directly, or transitively via another
-      fixture that depends on it) gets `live`, `integration`, `condor`, and
-      `slow` -- it needs a real Schedd, exercises the HTCondor backend, and
-      is always waiting on real daemon round trips. Select with
-      `pytest -m live` / exclude with `pytest -m "not live"`.
-    - Everything else defaults to `unit` and `fast` unless it already opted
-      into a kind (`regression`/`integration`) or speed (`slow`) marker by
-      hand -- e.g. an explicit @pytest.mark.regression on a test written to
-      catch a specific bug from recurring, or @pytest.mark.condor on a
-      dry-run htcondor-submit test that never touches a Schedd.
+    - Any test using condor_schedd (directly or transitively) gets `live`,
+      `integration`, `condor`, and `slow` -- it needs a real Schedd, and a
+      real backend daemon round trip is never sub-10s.
+    - Everything else defaults to `unit` and `fast` unless already marked
+      otherwise by hand (e.g. @pytest.mark.regression).
     """
     KIND_MARKERS = {"unit", "regression", "integration"}
     SPEED_MARKERS = {"fast", "slow"}

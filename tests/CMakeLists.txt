@@ -26,11 +26,8 @@ endif()
 
 # create_test(<file> [LABELS <label>...] [PYTEST_ARGS <arg>...])
 #
-# LABELS becomes the CTest test's LABELS property, so `ctest -L <label>` /
-# `ctest -LE <label>` filters the same way `pytest -m <marker>` /
-# `pytest -m "not <marker>"` already does for that file's tests -- keep
-# these labels in sync with the marker names in pyproject.toml's
-# [tool.pytest.ini_options] markers list.
+# LABELS sets the CTest LABELS property, so `ctest -L`/`-LE` filters like
+# `pytest -m` does. Keep in sync with pyproject.toml's markers list.
 function(create_test FILE)
     cmake_parse_arguments(ARG "" "" "LABELS;PYTEST_ARGS" ${ARGN})
     get_filename_component(TEST_NAME ${FILE} NAME_WE)
@@ -61,8 +58,10 @@ else()
     message(STATUS "pytest-xdist not found -- live tests will run sequentially. `pip install pytest-xdist` to parallelize them.")
 endif()
 
+# test_dataflow.py also gets `regression` since ctest can't label just its
+# TestEndToEndTopologies subset -- selecting it here runs the whole file.
 create_test(test_dag.py LABELS "unit;fast")
-create_test(test_dataflow.py LABELS "unit;fast")
+create_test(test_dataflow.py LABELS "unit;regression;fast")
 create_test(test_change_directory.py LABELS "unit;fast")
 create_test(test_cli.py LABELS "unit;fast")
 create_test(test_execute.py LABELS "unit;fast")
