@@ -51,18 +51,25 @@ ctest -R test_change_directory
 
 CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_execute`, `test_sources`, `test_naming`, `test_monitor`, `test_submit`. `test_monitor` and `test_submit` both skip gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
 
-Each `ctest` target also carries a `LABELS` property mirroring the pytest markers below, so you can filter by category instead of by name. Since `ctest` targets are whole files, labels are per-file: `test_monitor` and `test_submit` carry `integration;live;condor;slow`, and the other seven carry `unit;fast`:
+Each `ctest` target also carries a `LABELS` property mirroring the pytest markers below, so you can filter by category instead of by name. Labels are per-file, since `ctest` targets are whole files:
+
+| Target | LABELS |
+|---|---|
+| `test_monitor`, `test_submit` | `integration;live;condor;slow` |
+| `test_dataflow` | `unit;regression;fast` |
+| the other 6 | `unit;fast` |
 
 ```sh
-ctest -L unit               # the 7 non-Schedd files
+ctest -L unit               # every file except test_monitor/test_submit
 ctest -L integration        # only test_monitor and test_submit
-ctest -L live               # same set as -L integration here (only these two files touch a live Schedd)
-ctest -L condor             # same set again at file granularity (see below for test_cli.py's finer-grained condor tests)
-ctest -L slow               # same set again -- real daemon round trips are never sub-10s
+ctest -L live               # same as -L integration here
+ctest -L condor             # same again -- HTCondor is the only live backend this suite has
+ctest -L regression         # test_dataflow (whole file; see below)
+ctest -L slow               # test_monitor and test_submit
 ctest -LE live              # everything except the live-Schedd tests
 ```
 
-`regression` has no file-level presence (it tags specific test *functions* inside otherwise-`unit` files, e.g. `test_dataflow.py`'s `TestEndToEndTopologies`), so `ctest -L regression` always returns nothing -- select it with `pytest -m regression` instead, which has per-test granularity. Same story for `condor` on `test_cli.py`: its four `TestSubmitHtcondor*` classes (dry-run only, never touch a Schedd) are marked `condor` at the pytest level but the file as a whole stays labeled `unit;fast` in CTest, since most of `test_cli.py` isn't HTCondor-specific.
+`test_dataflow` is mostly `unit`, with only its `TestEndToEndTopologies` class actually `regression` at the pytest level -- file-granular `ctest` labels can't carve that subset out, so `-L regression` runs the whole file. Use `pytest -m regression` for per-test granularity.
 
 ---
 
@@ -107,27 +114,25 @@ If individual runs still feel slow, `pytest -v --durations=0 tests/test_monitor.
 
 ### Markers
 
-Every test is auto-tagged along four independent axes by a `pytest_collection_modifyitems` hook in `conftest.py` -- no need to remember to mark a new test by hand:
+Every test is auto-tagged along four independent axes by a `pytest_collection_modifyitems` hook in `conftest.py` -- no need to mark a new test by hand:
 
 | Axis | Values | Default | Auto-applied when |
 |---|---|---|---|
-| kind | `unit`, `regression`, `integration` | `unit` | `integration`: uses the `condor_schedd` fixture (directly or transitively). `regression`: never auto-applied -- add `@pytest.mark.regression` by hand to a test written to catch a specific bug from recurring (e.g. `test_dataflow.py`'s `TestEndToEndTopologies`, `test_submit.py::test_inner_job_tagged_with_manager_id`). |
-| liveness | `live` | (unset) | uses the `condor_schedd` fixture -- requires a real, reachable HTCondor Schedd. |
-| backend | `condor` | (unset) | uses the `condor_schedd` fixture. Also applied by hand to backend tests that don't need a live Schedd -- `test_cli.py`'s four `TestSubmitHtcondor*` classes (dry-run submit-description generation). |
-| speed | `fast`, `slow` | `fast` | `slow`: uses the `condor_schedd` fixture -- real daemon round trips are never sub-10s. |
+| kind | `unit`, `regression`, `integration` | `unit` | `integration`: uses `condor_schedd`. `regression`: never auto-applied -- add `@pytest.mark.regression` by hand for a test guarding a fixed bug (e.g. `test_dataflow.py::TestEndToEndTopologies`, `test_submit.py::test_inner_job_tagged_with_manager_id`, `test_monitor.py::test_private_log_not_clobbered`). |
+| liveness | `live` | (unset) | uses `condor_schedd` -- requires a real, reachable HTCondor Schedd. |
+| backend | `condor` | (unset) | uses `condor_schedd`; always alongside `live`, never alone. Names *which* live backend -- currently identical to `live` since HTCondor is the only one. |
+| speed | `fast`, `slow` | `fast` | nominal runtime, not what's tested -- `slow` is 10s+. Auto-applied to `condor_schedd` tests (a real backend round trip is never sub-10s); mark any other slow test by hand. |
 
-`kind` and `speed` aren't strictly exclusive: a test can be both `regression` and `integration`/`live`/`condor`/`slow` at once (both regression examples above are). `condor` pairs with `live`: every `live` test is `condor` (you can't touch a real Schedd without exercising the backend), but not every `condor` test is `live` -- the dry-run htcondor-submit tests never touch a Schedd.
+Axes aren't strictly exclusive -- a test can be `regression` and `integration`/`live`/`condor`/`slow` at once (all three regression examples above are).
 
 Select or exclude by marker directly:
 
 ```sh
 pytest -m live                   # only the live-Schedd tests
 pytest -m "not live"             # everything except them (works with no HTCondor installed at all)
-pytest -m condor                 # the HTCondor backend -- live Schedd tests plus dry-run submit tests
-pytest -m "condor and not live"  # just the dry-run htcondor-submit tests (no Schedd needed)
 pytest -m unit                   # fast, isolated tests only
-pytest -m regression             # tests written to catch a specific bug from recurring
+pytest -m regression             # tests guarding a specific fixed bug
 pytest -m "not slow"             # skip anything that takes 10+ seconds
 ```
 
-This is what a future test file gated on a live Schedd needs to do to be picked up the same way `test_monitor.py` is, including by CI (`.github/workflows/live-condor-tests.yml` selects tests by the `live` marker, not by filename).
+CI picks up a future live-Schedd test file the same way: `.github/workflows/live-condor-tests.yml` selects by the `live` marker, not by filename.

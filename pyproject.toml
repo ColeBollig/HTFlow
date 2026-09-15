@@ -22,30 +22,19 @@ include = ["htflow*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-# -ra: always show a short summary of skip/xfail reasons at the end of the
-# run, even without -v -- so a skipped HTCondor-Schedd test is never buried.
-addopts = "-ra"
+# -ra: show skip/xfail reasons even without -v.
+# --strict-markers: a typo'd marker name fails collection instead of warning.
+addopts = "-ra --strict-markers"
 markers = [
-    # Kind -- what the test is for. Defaults to `unit` unless a test opts into
-    # `regression` or the condor_schedd fixture auto-applies `integration`
-    # (see tests/conftest.py's pytest_collection_modifyitems). Not strictly
-    # exclusive: a test can be both `regression` and `integration` at once.
-    "unit: isolated test of a single component's logic, no live external system. Auto-applied to any test not otherwise marked unit/regression/integration.",
-    "regression: written specifically to catch a previously-fixed bug from recurring; apply by hand.",
-    "integration: exercises multiple components together across a real boundary. Auto-applied to any test that uses the condor_schedd fixture.",
-    # Live -- requires a live, reachable HTCondor Schedd.
-    "live: requires a live, reachable HTCondor Schedd. Auto-applied by tests/conftest.py's pytest_collection_modifyitems to any test that uses the condor_schedd fixture -- select with `pytest -m live` / exclude with `pytest -m 'not live'`.",
-    # Condor -- exercises the HTCondor submit/monitor backend specifically
-    # (MonitorEngine, `htflow submit htcondor`), as opposed to engine-agnostic
-    # DAG/JDL logic shared by every backend. Pairs with `live`: every `live`
-    # test is also `condor` (you can't touch a real Schedd without exercising
-    # the backend), but not every `condor` test is `live` -- e.g. the
-    # `--dry-run` htcondor submit tests in test_cli.py never touch a Schedd.
-    "condor: exercises the HTCondor submit/monitor backend. Auto-applied to any test that uses the condor_schedd fixture; apply by hand to backend tests that don't (e.g. dry-run submit-generation tests).",
-    # Speed -- fast unless it takes 10+ seconds. Defaults to `fast`, and
-    # auto-applied to `slow` for any condor_schedd-fixture test (real daemon
-    # round trips are never sub-10s); mark a specific slow test by hand
-    # elsewhere with `@pytest.mark.slow`.
-    "fast: runs in well under 10 seconds. Auto-applied to any test not otherwise marked fast/slow.",
-    "slow: takes 10+ seconds (e.g. waiting on real HTCondor daemon round trips). Auto-applied to any test that uses the condor_schedd fixture.",
+    # Kind: what the test is for. Not strictly exclusive (e.g. regression + integration).
+    "unit: isolated test of a single component's logic, no live external system. Default.",
+    "regression: guards against a previously-fixed bug recurring; apply by hand.",
+    "integration: exercises multiple components across a real boundary. Auto-applied via the condor_schedd fixture.",
+    # Liveness: requires a live, reachable HTCondor Schedd.
+    "live: requires a live, reachable HTCondor Schedd. Auto-applied via the condor_schedd fixture.",
+    # Backend: subset of `live` naming which backend is exercised.
+    "condor: the live backend is HTCondor. Auto-applied alongside `live`; currently identical to it.",
+    # Speed: based on nominal runtime, not what's tested.
+    "fast: well under 10 seconds. Default.",
+    "slow: 10+ seconds, e.g. a real backend daemon round trip. Auto-applied via the condor_schedd fixture.",
 ]

@@ -344,8 +344,6 @@ class TestResolveFrom:
 # when --dry-run is absent, which none of these tests do.
 
 class TestSubmitHtcondorQuoting:
-    pytestmark = pytest.mark.condor
-
     def test_plain_value_unquoted(self):
         assert submit_htcondor._submit_string("execute manual") == '"execute manual"'
 
@@ -354,8 +352,6 @@ class TestSubmitHtcondorQuoting:
 
 
 class TestSubmitHtcondor:
-    pytestmark = pytest.mark.condor
-
     def test_missing_mode_exits_2(self, make_sub):
         a = make_sub("a")
         assert run_cli("submit", "htcondor", "--jdl", str(a)) == 2
@@ -447,8 +443,6 @@ class TestSubmitHtcondor:
 
 
 class TestSubmitHtcondorNoSharedFs:
-    pytestmark = pytest.mark.condor
-
     def test_rejected_with_monitor_mode(self, make_sub, monkeypatch):
         monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
         a = make_sub("a")
@@ -562,8 +556,6 @@ class TestSubmitHtcondorNoSharedFs:
 
 
 class TestSubmitHtcondorContainer:
-    pytestmark = pytest.mark.condor
-
     def test_rejected_with_monitor_mode(self, make_sub, monkeypatch):
         monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/htflow")
         a = make_sub("a")
