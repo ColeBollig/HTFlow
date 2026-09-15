@@ -38,6 +38,15 @@ jobs:
           - name: AlmaLinux
             runner: ubuntu-latest
             container: almalinux:latest
+          - name: Windows
+            runner: windows-latest
+            # Windows' official Python installer registers only `python.exe`,
+            # not `python3.exe`. Every other leg keeps using `python3`
+            # unchanged (verified working today) rather than assuming an
+            # unversioned `python` alias exists on the dnf-based container
+            # images too -- that's a real, distro-version-dependent gotcha
+            # (PEP 394) not worth gambling on without a way to verify it here.
+            python: python
 
     steps:
       - uses: actions/checkout@v6
@@ -54,10 +63,15 @@ jobs:
         with:
           python-version: "3.x"
 
+      # matrix.python defaults to python3 (every non-Windows leg); only the
+      # Windows entry above overrides it to `python`.
       - name: Install package and test dependencies
-        run: python3 -m pip install pytest -e .
+        run: ${{ matrix.python || 'python3' }} -m pip install pytest pytest-timeout -e .
 
-      # htcondor only publishes Linux wheels
+      # htcondor only publishes Linux wheels -- no Windows wheel either
+      # (confirmed via pypi.org/pypi/htcondor/json: manylinux_2_28 x86_64/
+      # aarch64 only), so the Windows leg falls through to the mock stub
+      # below exactly like the macOS leg already does.
       - name: Install htcondor (Linux only)
         if: runner.os == 'Linux'
         run: python3 -m pip install htcondor
@@ -81,14 +95,30 @@ jobs:
       #     echo "PYTHONPATH=/usr/local/condor/lib/python3" >> "$GITHUB_ENV"
 
       - name: Report HTCondor bindings source
-        run: |
-          python3 -c "
-          try:
-              import htcondor2
-              print('Using REAL htcondor2 bindings:', htcondor2.__file__)
-          except ImportError:
-              print('htcondor2 not installed -- tests will fall back to the mock stub')
-          "
+        run: ${{ matrix.python || 'python3' }} .github/scripts/report_htcondor_bindings.py
 
       - name: Run tests
-        run: python3 -m pytest
+        run: ${{ matrix.python || 'python3' }} -m pytest
+
+      # A real downloadable archive of every test's own working directory
+      # (tests/execution/<Class>__<test>, see conftest.py's tmp_path
+      # fixture -- htflow's own DEBUG-level log plus whatever job
+      # output/error files it produced) rather than relying on pytest's own
+      # captured-output summary, which can truncate or miss exactly the
+      # detail needed to diagnose a platform-specific failure. shell: bash
+      # works unmodified on every leg in this matrix, Windows included
+      # (GitHub-hosted Windows runners ship Git Bash), so this needs no
+      # per-OS branching the way the steps above do.
+      - name: Package test execution artifacts on failure
+        if: failure()
+        shell: bash
+        run: tar -czf "test-execution-${{ matrix.name }}.tar.gz" tests/execution 2>&1 || true
+
+      - name: Upload test execution artifacts
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-execution-${{ matrix.name }}
+          path: test-execution-${{ matrix.name }}.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7
