@@ -20,6 +20,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from htflow.__main__ import main
+from htflow.config import ExecutionConfig
+from htflow.dataflow import HTCondorDataFlow
+from htflow.engines.manual import ManualEngine
 from htflow.utils.directory import ChangeDir
 
 
@@ -380,3 +383,75 @@ class TestExecuteResolveFrom:
         assert (tmp_path / "exec.log").exists()
         assert not (subdir / "exec.log").exists()
         assert not (target / "exec.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# --max-active-nodes: CLI-level behavior
+# ---------------------------------------------------------------------------
+
+class TestExecuteMaxActiveNodes:
+    def _make_independent_roots(self, make_jdl, n):
+        return [make_jdl(chr(ord("a") + i), task_id=i + 1) for i in range(n)]
+
+    def test_default_runs_every_independent_root(self, make_jdl, htflow_log, exec_log):
+        roots = self._make_independent_roots(make_jdl, 5)
+        assert run_execute("--jdl", *[str(r) for r in roots], log_file=htflow_log) == 0
+        assert sorted(exec_order(exec_log)) == [1, 2, 3, 4, 5]
+
+    def test_limit_below_ready_count_still_completes(self, make_jdl, htflow_log, exec_log):
+        """A cap smaller than the number of independent ready nodes just spreads
+        their execution across more Execute()/Update() cycles -- everything
+        still eventually runs and the workflow still succeeds."""
+        roots = self._make_independent_roots(make_jdl, 5)
+        assert run_execute("--jdl", *[str(r) for r in roots], "--max-active-nodes", "2", log_file=htflow_log) == 0
+        assert sorted(exec_order(exec_log)) == [1, 2, 3, 4, 5]
+
+    def test_limit_below_ready_count_logs_deferral(self, make_jdl, htflow_log):
+        roots = self._make_independent_roots(make_jdl, 5)
+        run_execute("--jdl", *[str(r) for r in roots], "--max-active-nodes", "2", log_file=htflow_log)
+        assert "Max limit of active nodes 2 reached" in htflow_log.read_text()
+
+    @pytest.mark.parametrize("value", ["-2", "-100"])
+    def test_invalid_value_exits_2(self, make_jdl, htflow_log, value):
+        a = make_jdl("a", task_id=1)
+        assert run_execute("--jdl", str(a), "--max-active-nodes", value, log_file=htflow_log) == 2
+
+
+# ---------------------------------------------------------------------------
+# --max-active-nodes: precise per-cycle capping (ManualEngine, direct)
+# ---------------------------------------------------------------------------
+#
+# These bypass the full Terminate()-driven poll loop and call Bootstrap() +
+# a single Execute() directly -- run_execute() can't safely exercise
+# max_active_nodes=0 (nothing would ever run, so Terminate() would never
+# return and the CLI loop would hang forever). Checking active_nodes/
+# ready_nodes after one Execute() call is also a far more precise way to
+# confirm the cap itself than inferring it from eventual end-to-end success.
+
+class TestManualEngineMaxActiveNodesCap:
+    def _bootstrap_and_execute_once(self, make_jdl, limit):
+        jdls = [str(make_jdl(chr(ord("a") + i), task_id=i + 1)) for i in range(5)]
+        config = ExecutionConfig(max_active_nodes=limit)
+        dag = HTCondorDataFlow(files=jdls, config=config).generate()
+        engine = ManualEngine(dag, config=config)
+        try:
+            engine.Bootstrap()
+            engine.Execute()
+            return len(dag.internal.active_nodes), len(dag.internal.ready_nodes)
+        finally:
+            engine.Cleanup()
+
+    def test_limit_caps_active_nodes_this_cycle(self, make_jdl):
+        active, ready = self._bootstrap_and_execute_once(make_jdl, 2)
+        assert active == 2
+        assert ready == 3
+
+    def test_unlimited_starts_every_ready_node(self, make_jdl):
+        active, ready = self._bootstrap_and_execute_once(make_jdl, -1)
+        assert active == 5
+        assert ready == 0
+
+    def test_zero_starts_nothing(self, make_jdl):
+        active, ready = self._bootstrap_and_execute_once(make_jdl, 0)
+        assert active == 0
+        assert ready == 5

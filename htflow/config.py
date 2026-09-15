@@ -20,6 +20,17 @@ from typing import Optional
 
 from .utils.naming import DEFAULT_HASH_LENGTH, validate_hash_length
 
+DEFAULT_MAX_ACTIVE_NODES = 100
+
+
+def validate_max_active_nodes(value: int) -> None:
+    """Raise ValueError unless value is -1 (unlimited), 0 (no execution), or a positive int (limit)"""
+    if not isinstance(value, int) or isinstance(value, bool) or value < -1:
+        raise ValueError(
+            f"max active nodes must be -1 (unlimited), 0 (no execution), or a "
+            f"positive integer (got {value!r})"
+        )
+
 
 @dataclass(frozen=True)
 class ExecutionConfig:
@@ -32,6 +43,8 @@ class ExecutionConfig:
     relative_to_source: bool = False
     resolve_from: Optional[Path] = None
     node_name_length: int = DEFAULT_HASH_LENGTH
+    max_active_nodes: int = DEFAULT_MAX_ACTIVE_NODES
 
     def __post_init__(self) -> None:
         validate_hash_length(self.node_name_length)
+        validate_max_active_nodes(self.max_active_nodes)

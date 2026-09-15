@@ -269,6 +269,26 @@ class TestMonitorLinear:
 
 
 # ---------------------------------------------------------------------------
+# --max-active-nodes: same cap logic as ManualEngine (see test_execute.py),
+# exercised here against a real Schedd to confirm MonitorEngine applies it
+# too. A cap smaller than the ready count just spreads submission across
+# more Execute()/Update() cycles -- everything still eventually runs.
+# ---------------------------------------------------------------------------
+
+class TestMonitorMaxActiveNodes:
+    def test_limit_below_ready_count_still_completes(self, make_condor_jdl, htflow_log, exec_log):
+        roots = [make_condor_jdl(chr(ord("a") + i), task_id=i + 1) for i in range(5)]
+        code = run_monitor("--jdl", *[str(r) for r in roots], "--max-active-nodes", "2", log_file=htflow_log)
+        assert code == 0
+        assert sorted(exec_order(exec_log)) == [1, 2, 3, 4, 5]
+
+    def test_limit_below_ready_count_logs_deferral(self, make_condor_jdl, htflow_log):
+        roots = [make_condor_jdl(chr(ord("a") + i), task_id=i + 1) for i in range(5)]
+        run_monitor("--jdl", *[str(r) for r in roots], "--max-active-nodes", "2", log_file=htflow_log)
+        assert "Max limit of active nodes 2 reached" in htflow_log.read_text()
+
+
+# ---------------------------------------------------------------------------
 # Factory / late-materialization nodes (max_materialize)
 #
 # A node backed by a real HTCondor job factory takes a different completion

@@ -340,8 +340,13 @@ class MonitorEngine(Engine):
         schedd = htcondor2.Schedd()
         attempted = list()
         submitted_any = False
+        limit = self.config.max_active_nodes
 
-        for i in self._dag.internal.ready_nodes:
+        for idx, i in enumerate(self._dag.internal.ready_nodes):
+            if limit != -1 and len(self._dag.internal.active_nodes) >= limit:
+                logger.debug("Max limit of active nodes %d reached: Deferring execution of %d nodes", limit, len(self._dag.internal.ready_nodes) - idx)
+                break
+
             attempted.append(i)
 
             node = self._dag[i]
@@ -371,7 +376,7 @@ class MonitorEngine(Engine):
 
     def Terminate(self) -> Optional[int]:
         """Monitor engine terminal state check: returns exit code"""
-        if len(self._dag.internal.ready_nodes) > 0 or len(self._dag.internal.active_nodes) > 0:
+        if len(self._dag.internal) > 0:
             return None
 
         success = True
