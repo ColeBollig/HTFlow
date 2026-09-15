@@ -322,15 +322,11 @@ jobs:
       # services always run as Local System, so there's no reserved-
       # identity collision -- this runs as the default runner account.
       #
-      # No -n auto (pytest-xdist) here yet, unlike the Linux leg. -x stops
-      # at the first failure: without xdist spreading items across
-      # workers, a genuine hang repeats identically across every
-      # live-marked test, so continuing just burns a pytest-timeout per
-      # remaining test for no new information.
+      # No -n auto (pytest-xdist) here yet, unlike the Linux leg.
       - name: Run live-Schedd tests (must not skip)
         env:
           HTFLOW_REQUIRE_CONDOR: "1"
-        run: python -m pytest -m live -v -ra -x
+        run: python -m pytest -m live -v -ra
 
       # Same as the Linux job's equivalent step: HTCondor's own daemon
       # logs (SchedLog/StarterLog show why a job never launched, which
