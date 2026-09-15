@@ -51,6 +51,19 @@ ctest -R test_change_directory
 
 CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_execute`, `test_sources`, `test_naming`, `test_monitor`, `test_submit`. `test_monitor` and `test_submit` both skip gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
 
+Each `ctest` target also carries a `LABELS` property mirroring the pytest markers below, so you can filter by category instead of by name. Since `ctest` targets are whole files, labels are per-file: `test_monitor` and `test_submit` carry `integration;live;condor;slow`, and the other seven carry `unit;fast`:
+
+```sh
+ctest -L unit               # the 7 non-Schedd files
+ctest -L integration        # only test_monitor and test_submit
+ctest -L live               # same set as -L integration here (only these two files touch a live Schedd)
+ctest -L condor             # same set again at file granularity (see below for test_cli.py's finer-grained condor tests)
+ctest -L slow               # same set again -- real daemon round trips are never sub-10s
+ctest -LE live              # everything except the live-Schedd tests
+```
+
+`regression` has no file-level presence (it tags specific test *functions* inside otherwise-`unit` files, e.g. `test_dataflow.py`'s `TestEndToEndTopologies`), so `ctest -L regression` always returns nothing -- select it with `pytest -m regression` instead, which has per-test granularity. Same story for `condor` on `test_cli.py`: its four `TestSubmitHtcondor*` classes (dry-run only, never touch a Schedd) are marked `condor` at the pytest level but the file as a whole stays labeled `unit;fast` in CTest, since most of `test_cli.py` isn't HTCondor-specific.
+
 ---
 
 ### pytest (manual)
@@ -90,13 +103,31 @@ Each test uses its own isolated `tmp_path` (own `flowman/` lock directory, own b
 
 If individual runs still feel slow, `pytest -v --durations=0 tests/test_monitor.py` prints a per-test timing breakdown, which is the fastest way to see whether the cost is spread evenly or concentrated in specific tests.
 
-#### The `live_condor` marker
+---
 
-Any test that uses the `condor_schedd` fixture (directly, or transitively through another fixture that depends on it) is automatically tagged `live_condor` by a `pytest_collection_modifyitems` hook in `conftest.py` -- no need to remember to mark a new test by hand, just use the fixture. This is what a future test file gated on a live Schedd needs to do to be picked up the same way `test_monitor.py` is, including by CI (`.github/workflows/live-condor-tests.yml` selects tests by this marker, not by filename).
+### Markers
+
+Every test is auto-tagged along four independent axes by a `pytest_collection_modifyitems` hook in `conftest.py` -- no need to remember to mark a new test by hand:
+
+| Axis | Values | Default | Auto-applied when |
+|---|---|---|---|
+| kind | `unit`, `regression`, `integration` | `unit` | `integration`: uses the `condor_schedd` fixture (directly or transitively). `regression`: never auto-applied -- add `@pytest.mark.regression` by hand to a test written to catch a specific bug from recurring (e.g. `test_dataflow.py`'s `TestEndToEndTopologies`, `test_submit.py::test_inner_job_tagged_with_manager_id`). |
+| liveness | `live` | (unset) | uses the `condor_schedd` fixture -- requires a real, reachable HTCondor Schedd. |
+| backend | `condor` | (unset) | uses the `condor_schedd` fixture. Also applied by hand to backend tests that don't need a live Schedd -- `test_cli.py`'s four `TestSubmitHtcondor*` classes (dry-run submit-description generation). |
+| speed | `fast`, `slow` | `fast` | `slow`: uses the `condor_schedd` fixture -- real daemon round trips are never sub-10s. |
+
+`kind` and `speed` aren't strictly exclusive: a test can be both `regression` and `integration`/`live`/`condor`/`slow` at once (both regression examples above are). `condor` pairs with `live`: every `live` test is `condor` (you can't touch a real Schedd without exercising the backend), but not every `condor` test is `live` -- the dry-run htcondor-submit tests never touch a Schedd.
 
 Select or exclude by marker directly:
 
 ```sh
-pytest -m live_condor            # only the live-Schedd tests
-pytest -m "not live_condor"      # everything except them (works with no HTCondor installed at all)
+pytest -m live                   # only the live-Schedd tests
+pytest -m "not live"             # everything except them (works with no HTCondor installed at all)
+pytest -m condor                 # the HTCondor backend -- live Schedd tests plus dry-run submit tests
+pytest -m "condor and not live"  # just the dry-run htcondor-submit tests (no Schedd needed)
+pytest -m unit                   # fast, isolated tests only
+pytest -m regression             # tests written to catch a specific bug from recurring
+pytest -m "not slow"             # skip anything that takes 10+ seconds
 ```
+
+This is what a future test file gated on a live Schedd needs to do to be picked up the same way `test_monitor.py` is, including by CI (`.github/workflows/live-condor-tests.yml` selects tests by the `live` marker, not by filename).

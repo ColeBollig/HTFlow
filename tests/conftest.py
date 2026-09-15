@@ -162,14 +162,37 @@ def condor_schedd():
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-tag every test that uses condor_schedd (directly, or transitively
-    via another fixture that depends on it) with the `live_condor` marker --
-    so future test files get labeled for free just by using the fixture,
-    without anyone having to remember to add the marker by hand. Select these
-    tests with `pytest -m live_condor`, or exclude them with `-m "not live_condor"`."""
+    """Auto-tag every test along four axes -- kind (unit/regression/integration),
+    liveness (live), backend (condor), and speed (fast/slow) -- so a new test
+    file gets sensible default tags for free, without anyone having to
+    remember to mark it by hand.
+
+    - Any test using condor_schedd (directly, or transitively via another
+      fixture that depends on it) gets `live`, `integration`, `condor`, and
+      `slow` -- it needs a real Schedd, exercises the HTCondor backend, and
+      is always waiting on real daemon round trips. Select with
+      `pytest -m live` / exclude with `pytest -m "not live"`.
+    - Everything else defaults to `unit` and `fast` unless it already opted
+      into a kind (`regression`/`integration`) or speed (`slow`) marker by
+      hand -- e.g. an explicit @pytest.mark.regression on a test written to
+      catch a specific bug from recurring, or @pytest.mark.condor on a
+      dry-run htcondor-submit test that never touches a Schedd.
+    """
+    KIND_MARKERS = {"unit", "regression", "integration"}
+    SPEED_MARKERS = {"fast", "slow"}
+
     for item in items:
         if "condor_schedd" in getattr(item, "fixturenames", ()):
-            item.add_marker(pytest.mark.live_condor)
+            item.add_marker(pytest.mark.live)
+            item.add_marker(pytest.mark.integration)
+            item.add_marker(pytest.mark.condor)
+            item.add_marker(pytest.mark.slow)
+
+        existing = {m.name for m in item.iter_markers()}
+        if not existing & KIND_MARKERS:
+            item.add_marker(pytest.mark.unit)
+        if not existing & SPEED_MARKERS:
+            item.add_marker(pytest.mark.fast)
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):

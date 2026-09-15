@@ -11,7 +11,7 @@ on:
 
 jobs:
   live-condor-tests:
-    name: live_condor-marked tests against a real minicondor (EL10)
+    name: live-marked tests against a real minicondor (EL10)
     runs-on: ubuntu-latest
     container: almalinux:10
 
@@ -118,13 +118,13 @@ jobs:
       # a hard failure (see tests/conftest.py's condor_schedd fixture) -- so
       # this step can only pass if these tests actually ran against the
       # minicondor above, never by silently skipping them. Selecting by the
-      # live_condor marker (auto-applied to any test using condor_schedd)
-      # rather than by filename means a future test file gated on a live
-      # Schedd gets picked up here automatically, with no workflow edit.
+      # live marker (auto-applied to any test using condor_schedd) rather
+      # than by filename means a future test file gated on a live Schedd
+      # gets picked up here automatically, with no workflow edit.
       #
-      # -n auto (pytest-xdist) spreads all live_condor-marked items -- across
+      # -n auto (pytest-xdist) spreads all live-marked items -- across
       # every file, not just within one -- over worker processes; each test
       # is mostly waiting on real daemon round trips, so this is a large win
       # for real wall-clock time (see tests/README.md).
       - name: Run live-Schedd tests as submituser (must not skip)
-        run: su submituser -c "cd '${GITHUB_WORKSPACE}' && HTFLOW_REQUIRE_CONDOR=1 python3 -m pytest -m live_condor -n auto -v -ra"
+        run: su submituser -c "cd '${GITHUB_WORKSPACE}' && HTFLOW_REQUIRE_CONDOR=1 python3 -m pytest -m live -n auto -v -ra"
