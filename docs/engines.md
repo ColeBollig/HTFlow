@@ -210,6 +210,8 @@ Launches a subprocess for every node currently in the `READY` state, up to `conf
 
 If a node's process fails to start, it is immediately transitioned to `FAILURE` and its children are `ORPHAN`ed.
 
+`arguments` is tokenized via `shlex.split(args, posix=(os.name != "nt"))` — POSIX mode (which treats `\` as an escape character) everywhere except Windows, where it would otherwise mangle a literal backslash in a Windows-style path. On Windows, `executable` is also launched directly via `subprocess.Popen(cmd, shell=False)` exactly as on POSIX, which means a JDL like `executable = foo.sh` won't run — Windows has no shebang-line/executable-bit interpretation. See [Platform Support](../README.md#platform-support).
+
 #### `Update()`
 
 Polls all `ACTIVE` nodes. For each process that has exited:

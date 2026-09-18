@@ -2,6 +2,10 @@
 
 Notes for AI coding agents working in this repo, based on how work here has actually gone.
 
+## Cross-platform
+
+HTFlow must work on Linux, macOS, and Windows — not just the platform you're developing on. Before assuming a POSIX-only tool/API is safe (a shell, `fcntl`, `/bin/sh`, forward-slash paths, `os.name`-sensitive behavior), check how it behaves on Windows and handle it, or use `os.name`/`sys.platform` to branch. `.github/workflows/tests.yml` and `live-condor-tests.yml` run the real test suite (including live-Schedd tests) on Windows CI — a change that isn't exercised there hasn't actually been verified cross-platform.
+
 ## Workflow: investigate, propose, confirm, then implement
 
 For anything beyond a trivial fix, don't jump straight to editing files:

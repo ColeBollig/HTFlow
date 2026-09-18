@@ -24,7 +24,10 @@ testpaths = ["tests"]
 pythonpath = ["."]
 # -ra: show skip/xfail reasons even without -v.
 # --strict-markers: a typo'd marker name fails collection instead of warning.
-addopts = "-ra --strict-markers"
+# --timeout-method=thread: pytest-timeout's cross-platform method (no
+# signal.alarm() dependency, which doesn't exist on Windows) -- explicit
+# rather than relying on its own Windows auto-detection.
+addopts = "-ra --strict-markers --timeout-method=thread"
 markers = [
     # Kind: what the test is for. Not strictly exclusive (e.g. regression + integration).
     "unit: isolated test of a single component's logic, no live external system. Default.",

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-import shlex
+import os
 import shutil
 import sys
 import textwrap
@@ -32,13 +32,20 @@ from htflow.exit_codes import EXIT_SETUP_FAILURE
 logger = logging.getLogger(__name__)
 
 
+# Forwarded from the submitter's own environment so the job can find the
+# same htcondor2/classad2 bindings and config -- only valid when the job
+# is guaranteed to run in the submitter's own environment (local universe
+# always; vanilla universe only outside --no-shared-fs).
+_SHARED_ENVIRONMENT_GETENV = "CONDOR_CONFIG,_CONDOR_*,PATH,PYTHONPATH,TZ,HOME,USER,LANG,LC_ALL,ASAN_OPTIONS,LSAN_OPTIONS"
+
+
 def _local_universe_defaults(args: argparse.Namespace, df: HTCondorDataFlow) -> dict:
     """monitor: local universe always runs on the AP."""
     return {
         "universe": "local",
         "should_transfer_files": "NO",
         "initialdir": str(Path.cwd()),
-        "getenv": "CONDOR_CONFIG,_CONDOR_*,PATH,PYTHONPATH,TZ,HOME,USER,LANG,LC_ALL,ASAN_OPTIONS,LSAN_OPTIONS",
+        "getenv": _SHARED_ENVIRONMENT_GETENV,
     }
 
 
@@ -91,6 +98,7 @@ def _vanilla_universe_defaults(args: argparse.Namespace, df: HTCondorDataFlow) -
     else:
         desc["should_transfer_files"] = "NO"
         desc["initialdir"] = str(Path.cwd())
+        desc["getenv"] = _SHARED_ENVIRONMENT_GETENV
 
     if args.container:
         desc["container_image"] = _submit_string(args.container)
@@ -154,9 +162,36 @@ def add_parser(name: str, subparsers: argparse._SubParsersAction, common_parser:
     return htcondor_p
 
 
+def _is_windows() -> bool:
+    """Indirection so tests can monkeypatch this instead of the real
+    os.name, which leaks into pytest's own internals."""
+    return os.name == "nt"
+
+
+def _python_name() -> str:
+    """Windows' official Python installer registers only 'python.exe', not
+    'python3.exe' -- same PEP 394 gotcha tests.yml's matrix already works
+    around for the same reason."""
+    return "python" if _is_windows() else "python3"
+
+
 def _submit_string(value: str) -> str:
     """Wrap a value in HTCondor's double-quoted submit-language string literal syntax."""
     return '"' + value.replace('"', '""') + '"'
+
+
+def _submit_arguments(args: List[str]) -> str:
+    """Build an HTCondor submit-language 'new' arguments syntax string from
+    a list -- doubled double-quotes escape a literal double quote, and an
+    argument containing whitespace or a single quote gets wrapped in single
+    quotes (with any literal single quote inside doubled the same way)."""
+    parts = []
+    for arg in args:
+        escaped = arg.replace('"', '""')
+        if not escaped or any(c.isspace() for c in escaped) or "'" in escaped:
+            escaped = "'" + escaped.replace("'", "''") + "'"
+        parts.append(escaped)
+    return '"' + " ".join(parts) + '"'
 
 
 def _inner_execute_arguments(args: argparse.Namespace, transferred: bool) -> List[str]:
@@ -185,21 +220,27 @@ def _inner_execute_arguments(args: argparse.Namespace, transferred: bool) -> Lis
 def _build_submit(args: argparse.Namespace, df: HTCondorDataFlow) -> htcondor2.Submit:
     mode = args.mode
 
-    if shutil.which("htflow") is None:
-        logger.error("could not locate the 'htflow' executable on PATH")
+    # Invoked as 'python -m htflow ...' rather than the 'htflow'
+    # console-script entry point: that's a POSIX shebang script on
+    # Linux/macOS but a compiled .exe launcher on Windows, while 'python
+    # -m htflow' means the same thing everywhere. transfer_executable is a
+    # plain boolean (unlike the should_transfer_files enum) -- needs
+    # "false", not "NO".
+    python_path = shutil.which(_python_name())
+    if python_path is None:
+        logger.error("could not locate the '%s' executable on PATH", _python_name())
         sys.exit(EXIT_SETUP_FAILURE)
 
     workdir = Engine.work_dir()
     workdir.mkdir(exist_ok=True)
 
     transferred = mode == "manual" and args.no_shared_fs
-    command = ["htflow"] + _inner_execute_arguments(args, transferred)
+    inner_args = _inner_execute_arguments(args, transferred)
 
     desc = {
-        # 'shell' builds executable/arguments/transfer_executable for us.
-        # Unlike 'arguments', its value isn't quote-stripped -- do NOT wrap
-        # it in _submit_string(), or the shell sees one big quoted word.
-        "shell": shlex.join(command),
+        "executable": python_path,
+        "arguments": _submit_arguments(["-m", "htflow"] + inner_args),
+        "transfer_executable": "false",
         "batch_name": f"flowman-{mode}+$(ClusterId)",
         "output": str(workdir / f"submit.{mode}.debug"),
         "error": str(workdir / f"submit.{mode}.debug"),

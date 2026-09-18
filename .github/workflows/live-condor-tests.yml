@@ -24,7 +24,7 @@ jobs:
         run: dnf install -y python3 python3-pip curl
 
       - name: Install package and test dependencies
-        run: python3 -m pip install pytest pytest-xdist -e .
+        run: python3 -m pip install pytest pytest-xdist pytest-timeout -e .
 
       # Installs a complete single-node HTCondor pool (collector, negotiator,
       # schedd, startd) via HTCondor's own installer. The `minicondor` RPM
@@ -38,16 +38,12 @@ jobs:
       - name: Install and start minicondor
         run: curl -fsSL https://get.htcondor.org | /bin/bash -s -- --no-dry-run
 
-      # Stock HTCondor timing defaults (NEGOTIATOR_INTERVAL=60s in
-      # particular) are tuned for a real pool, not a single-node test
-      # instance -- a freshly submitted vanilla-universe job can sit idle
-      # for up to a minute waiting for the negotiator's own periodic cycle.
-      # These overrides are HTCondor's own Ornithology test framework's
-      # values (src/condor_tests/ornithology/condor.py's DEFAULT_PARAMS) --
-      # not correctness-affecting, just how often daemons poll/report/
-      # negotiate. Safe for a personal/test pool; never do this to a
-      # production pool. LOCAL_CONFIG_DIR is queried rather than hardcoded
-      # in case a future HTCondor release changes the RPM's default layout.
+      # Applies .github/condor/99-ci-testing.conf -- shared with the
+      # Windows job below, see that file's own comments for what it sets
+      # and why (timing tuned for a single-node pool, authorization widened
+      # for a throwaway pool). LOCAL_CONFIG_DIR is queried rather than
+      # hardcoded in case a future HTCondor release changes the RPM's
+      # default layout.
       #
       # condor_reconfig, not condor_restart: a restart kills and respawns
       # every daemon, regenerating their address/lock files -- since those
@@ -57,49 +53,24 @@ jobs:
       # reconfig re-reads config and re-arms each daemon's periodic timers
       # in place, without touching daemon identity/files at all -- verified
       # locally to apply these same interval changes just as effectively.
-      - name: Tune HTCondor timing for fast tests
+      # (The Windows job can't use condor_reconfig the same way -- see its
+      # own comments for why it restarts the service instead.)
+      - name: Apply shared CI HTCondor config
         run: |
           config_dir="$(condor_config_val LOCAL_CONFIG_DIR 2>/dev/null | awk '{print $1}')"
           config_dir="${config_dir:-/etc/condor/config.d}"
           mkdir -p "${config_dir}"
-          cat > "${config_dir}/99-fast-testing.conf" <<'EOF'
-          UPDATE_INTERVAL = 2
-          POLLING_INTERVAL = 2
-          NEGOTIATOR_INTERVAL = 2
-          NEGOTIATOR_MIN_INTERVAL = 2
-          NEGOTIATOR_CYCLE_DELAY = 2
-          SCHEDD_INTERVAL = 30
-          STARTER_UPDATE_INTERVAL = 2
-          STARTER_INITIAL_UPDATE_INTERVAL = 2
-          SHADOW_QUEUE_UPDATE_INTERVAL = 2
-          MachineMaxVacateTime = 2
-          RUNBENCHMARKS = 0
-          EOF
+          cp "${GITHUB_WORKSPACE}/.github/condor/99-ci-testing.conf" "${config_dir}/99-ci-testing.conf"
           condor_reconfig
 
       # condor_master forks off the rest of the daemons asynchronously, so
-      # give the schedd a moment to actually come up before trusting it.
+      # give it a moment to actually finish standing them up before
+      # trusting the pool. condor_who -quick queries condor_master's own
+      # readiness ClassAd directly (IsReady) rather than inferring
+      # readiness from whether some client tool happens to connect -- see
+      # wait_for_condor_ready.py for why, and its Ornithology reference.
       - name: Wait for the Schedd to come up
-        run: |
-          for i in $(seq 1 30); do
-            if condor_q >/dev/null 2>&1; then
-              echo "Schedd is up after ${i} attempt(s)"
-              condor_version
-              condor_status || true
-              exit 0
-            fi
-            echo "Waiting for Schedd... (${i}/30)"
-            sleep 2
-          done
-          echo "::error::HTCondor Schedd never became reachable"
-          log_dir="$(condor_config_val LOG 2>/dev/null || echo /var/log/condor)"
-          echo "--- ${log_dir} ---"
-          ls -la "${log_dir}" 2>&1 || true
-          echo "--- MasterLog ---"
-          tail -n 200 "${log_dir}/MasterLog" 2>&1 || true
-          echo "--- SchedLog ---"
-          tail -n 200 "${log_dir}/SchedLog" 2>&1 || true
-          exit 1
+        run: python3 .github/scripts/wait_for_condor_ready.py
 
       # HTCondor's schedd refuses to create a submitter UserRec for the
       # literal identity "condor" -- it's reserved for the daemons
@@ -128,3 +99,250 @@ jobs:
       # for real wall-clock time (see tests/README.md).
       - name: Run live-Schedd tests as submituser (must not skip)
         run: su submituser -c "cd '${GITHUB_WORKSPACE}' && HTFLOW_REQUIRE_CONDOR=1 python3 -m pytest -m live -n auto -v -ra"
+
+      # Covers both failure paths in one artifact (the Schedd never coming
+      # up, and a test itself failing/hanging): HTCondor's own daemon logs
+      # (SchedLog in particular -- would show e.g. a failure to spawn a
+      # local-universe starter, which nothing job-side can show) plus every
+      # test's own working directory under tests/execution/ (see
+      # conftest.py's tmp_path fixture -- htflow's own DEBUG-level log, the
+      # JDL, and the job's output/error/log files). A real downloadable
+      # archive rather than a `tail`'d text dump in the log, since the
+      # latter truncates and can't be searched/diffed against a working run.
+      - name: Package failure diagnostics
+        if: failure()
+        run: |
+          log_dir="$(condor_config_val LOG 2>/dev/null || echo /var/log/condor)"
+          tar -czf condor-failure-diagnostics-linux.tar.gz "${log_dir}" "${GITHUB_WORKSPACE}/tests/execution" 2>&1 || true
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: condor-failure-diagnostics-linux
+          path: condor-failure-diagnostics-linux.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Windows counterpart: same live-marked tests, against a real personal
+  # HTCondor pool installed via HTCondor's own Windows MSI (there's no
+  # get.htcondor.org-style install script for Windows, and no PyPI wheel --
+  # see README.md#platform-support). msiexec properties below come from
+  # HTCondor's own "Windows Installer" manual page, adapted for a
+  # single-machine pool.
+  live-condor-tests-windows:
+    name: live-marked tests against a real personal HTCondor pool (Windows)
+    runs-on: windows-latest
+
+    env:
+      HTCONDOR_INSTALLDIR: "C:\\Condor"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Pinned to exactly 3.9, not "3.x": the MSI's native extension
+      # modules (classad2_impl, classad3_impl, htcondor2_impl) are each
+      # built as a single `*.cp39-win_amd64.pyd` -- a version-specific
+      # (non-abi3) CPython extension, incompatible with any other minor
+      # version (verified via `msiinfo export ... File` against both the
+      # snapshot and current latest-stable release). Under "3.x", `import
+      # htcondor2` silently falls back to tests/conftest.py's mock stub
+      # instead of raising, turning a live-Schedd test into an opaque
+      # failure rather than an import error pointing at the real cause.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.9"
+
+      # HTCondor's Windows binaries live at htcss-downloads.chtc.wisc.edu
+      # (found via get.htcondor.org's own redirect) -- no GitHub release
+      # asset or PyPI wheel exists for Windows (see
+      # README.md#platform-support). tarball/current/current/ is a
+      # version-agnostic alias for the latest stable release.
+      - name: Download the HTCondor Windows installer
+        run: |
+          $url = "https://htcss-downloads.chtc.wisc.edu/tarball/current/current/condor-Windows-x64.msi"
+          Invoke-WebRequest -Uri $url -OutFile condor-installer.msi
+
+      # Unattended MSI install: NEWPOOL=Y makes this machine its own pool's
+      # central manager (collector+negotiator), SUBMITJOBS=Y a submit node
+      # (schedd), RUNJOBS=A an execute node (startd) unconditionally.
+      # GitHub-hosted Windows runners are already local administrators, so
+      # no explicit elevation is needed for msiexec.
+      - name: Install HTCondor (unattended, personal pool)
+        run: |
+          $args = @(
+            "/qb", "/l*", "condor-install-log.txt", "/i", "condor-installer.msi",
+            "NEWPOOL=Y", "POOLNAME=htflow-ci", "RUNJOBS=A", "VACATEJOBS=Y",
+            "SUBMITJOBS=Y", "USEVMUNIVERSE=N",
+            "ALLOWREAD=*", "ALLOWWRITE=*", "ALLOWADMINISTRATOR=*",
+            "INSTALLDIR=${env:HTCONDOR_INSTALLDIR}"
+          )
+          Start-Process msiexec.exe -ArgumentList $args -Wait -NoNewWindow
+          Get-Content condor-install-log.txt -Tail 100
+
+      # The installer doesn't update PATH/PYTHONPATH for the current CI
+      # session -- set both via $GITHUB_PATH/$GITHUB_ENV so later steps see
+      # condor_*.exe and the real htcondor2/classad2 bindings. Locations are
+      # discovered by searching the filesystem rather than assumed from
+      # INSTALLDIR: the MSI's Directory table shows "bin" and "lib\python"
+      # as TARGETDIR siblings, not children of INSTALLDIR, so they may not
+      # actually land under it.
+      - name: Add HTCondor to PATH/PYTHONPATH and set CONDOR_CONFIG
+        run: |
+          $condorWho = Get-ChildItem -Path "C:\" -Recurse -Filter "condor_who.exe" -ErrorAction SilentlyContinue -Depth 6 | Select-Object -First 1
+          if (-not $condorWho) {
+            Write-Host "::error::condor_who.exe not found anywhere under C:\ after install"
+            exit 1
+          }
+          Write-Host "Found condor_who.exe under: $($condorWho.Directory.FullName)"
+          Add-Content -Path $env:GITHUB_PATH -Value $condorWho.Directory.FullName
+
+          $bindings = Get-ChildItem -Path "C:\" -Recurse -Filter "htcondor2_impl.cp39-win_amd64.pyd" -ErrorAction SilentlyContinue -Depth 6 | Select-Object -First 1
+          if (-not $bindings) {
+            Write-Host "::error::htcondor2_impl.cp39-win_amd64.pyd not found anywhere under C:\ after install"
+            exit 1
+          }
+          # The .pyd lives INSIDE the "htcondor2" package directory itself
+          # (verified via the MSI's own File/Component/Directory tables:
+          # .../lib/python/htcondor2/htcondor2_impl.cp39-win_amd64.pyd) --
+          # PYTHONPATH needs that directory's PARENT so `import htcondor2`
+          # resolves to the package subfolder, not the .pyd's own folder.
+          $bindingsRoot = $bindings.Directory.Parent.FullName
+          Write-Host "Found Python bindings package root: $bindingsRoot"
+          Add-Content -Path $env:GITHUB_ENV -Value "PYTHONPATH=$bindingsRoot"
+
+          # htcondor2.Schedd() needs CONDOR_CONFIG set explicitly (the
+          # native condor_*.exe tools fall back to the registry on their
+          # own; the Python binding does not). The installer records the
+          # real path at HKLM:\Software\Condor\CONDOR_CONFIG.
+          $condorConfig = (Get-ItemProperty -Path "HKLM:\Software\Condor" -Name "CONDOR_CONFIG" -ErrorAction SilentlyContinue).CONDOR_CONFIG
+          if (-not $condorConfig) {
+            Write-Host "::error::CONDOR_CONFIG not found at HKLM:\Software\Condor after install"
+            exit 1
+          }
+          Write-Host "Found CONDOR_CONFIG in registry: $condorConfig"
+          Add-Content -Path $env:GITHUB_ENV -Value "CONDOR_CONFIG=$condorConfig"
+
+      # The installer's default condor_config bakes in `use
+      # SECURITY:recommended(SYSTEM, Administrator@*)` (HTCondor 9.0+'s
+      # secure-by-default policy), which only trusts SYSTEM and the
+      # literal "Administrator" account -- the runner's own "runneradmin"
+      # (a member of the Administrators *group*, not that account) gets
+      # authenticated but DENIED on every administrative command. See
+      # 99-ci-testing.conf for the full explanation (shared with Linux)
+      # and why widening authorization is the fix, not disabling auth.
+      #
+      # condor_reconfig can't apply this fix itself -- sending it needs
+      # WRITE access, denied for the same reason (chicken-and-egg).
+      # Dropping the config file and restarting the Windows service
+      # instead (an OS-level operation, authorized by Windows' own ACLs)
+      # sidesteps it: the master re-reads everything from scratch.
+      - name: Apply shared CI HTCondor config
+        run: |
+          $localConfigDir = (condor_config_val LOCAL_CONFIG_DIR 2>$null)
+          if (-not $localConfigDir) {
+            Write-Host "::error::LOCAL_CONFIG_DIR not set"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path $localConfigDir | Out-Null
+          Copy-Item -Path (Join-Path $env:GITHUB_WORKSPACE ".github\condor\99-ci-testing.conf") -Destination (Join-Path $localConfigDir "99-ci-testing.conf") -Force
+          Copy-Item -Path (Join-Path $env:GITHUB_WORKSPACE ".github\condor\99-ci-testing-windows.conf") -Destination (Join-Path $localConfigDir "99-ci-testing-windows.conf") -Force
+
+          Restart-Service -Name "Condor" -Force
+
+      # Vanilla-universe jobs (unlike local-universe ones -- see
+      # 99-ci-testing-windows.conf) run as a low-privilege, dynamically
+      # created "nobody"-equivalent account, which the installer's NTFS
+      # ACLs don't grant access to -- a vanilla job's own `import
+      # htcondor2` failed with "can't open file condor_config: Permission
+      # denied". Granting access directly on the MSI-managed condor_config
+      # (icacls /grant Everyone) didn't stick across runs -- Windows
+      # Installer self-repair on its own tracked files is the suspect --
+      # so this sidesteps the whole file chain instead: condor_config_val
+      # -dump prints the fully merged config (main file + condor_config.local
+      # + every LOCAL_CONFIG_DIR drop-in) as flat MACRO = value lines, which
+      # behaves identically to the original when re-read. LOCAL_CONFIG_DIR/
+      # LOCAL_CONFIG_FILE are stripped from the dump so nothing points back
+      # at the original, unreadable files. The result is one flat,
+      # self-contained file with no remaining references to anything
+      # MSI-owns, granted read access here.
+      #
+      # Only fixes it for this job's own $env:CONDOR_CONFIG though -- the
+      # separately-spawned wrapper job needs it forwarded explicitly, via
+      # submit_htcondor.py's getenv on manual mode's default branch.
+      - name: Make a fully self-contained, freely-readable condor_config
+        run: |
+          $ciConfig = Join-Path (Split-Path $env:CONDOR_CONFIG) "condor_config.ci-merged"
+          condor_config_val -dump |
+            Where-Object { $_ -notmatch '^(LOCAL_CONFIG_DIR|LOCAL_CONFIG_FILE)\s*=' } |
+            Set-Content $ciConfig
+          icacls $ciConfig /grant "Everyone:(RX)" | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "CONDOR_CONFIG=$ciConfig"
+
+      - name: Install package and test dependencies
+        run: python -m pip install pytest pytest-timeout -e .
+
+      - name: Report HTCondor bindings source
+        run: python .github/scripts/report_htcondor_bindings.py
+
+      # Windows service startup is asynchronous just like condor_master
+      # backgrounding itself on the Linux leg -- same condor_who -quick /
+      # IsReady check either way, see wait_for_condor_ready.py.
+      - name: Wait for the Schedd to come up
+        run: python .github/scripts/wait_for_condor_ready.py
+
+      # Stores a Windows credential for this account, so
+      # STARTER_ALLOW_RUNAS_OWNER (99-ci-testing-windows.conf) can
+      # authenticate as it when launching a local-universe job. There's no
+      # way to read back GitHub's own runneradmin password, so this resets
+      # it to a fresh one first (`net user` is an admin password reset,
+      # no old password needed) -- kept only in this step's own variable,
+      # never logged, since it becomes the account's real login password.
+      - name: Store a Windows credential for local-universe jobs
+        run: |
+          # No System.Web on pwsh (Windows runner default shell) for
+          # GeneratePassword(), so build one by hand: one char from each of
+          # upper/lower/digit/special (Windows' complexity policy needs 3
+          # of 4), padded and shuffled.
+          $upper = 65..90 | ForEach-Object { [char]$_ }
+          $lower = 97..122 | ForEach-Object { [char]$_ }
+          $digit = 48..57 | ForEach-Object { [char]$_ }
+          $special = '!@#$%^&*-_='.ToCharArray()
+          $all = $upper + $lower + $digit + $special
+          $required = @(
+            (Get-Random -InputObject $upper), (Get-Random -InputObject $lower),
+            (Get-Random -InputObject $digit), (Get-Random -InputObject $special)
+          )
+          $rest = 1..20 | ForEach-Object { Get-Random -InputObject $all }
+          $password = -join (($required + $rest) | Sort-Object { Get-Random })
+          net user $env:USERNAME "$password" | Out-Null
+          condor_store_cred add -p "$password"
+
+      # No unprivileged-user dance here, unlike the Linux leg: Windows
+      # services always run as Local System, so there's no reserved-
+      # identity collision -- this runs as the default runner account.
+      #
+      # No -n auto (pytest-xdist) here yet, unlike the Linux leg.
+      - name: Run live-Schedd tests (must not skip)
+        env:
+          HTFLOW_REQUIRE_CONDOR: "1"
+        run: python -m pytest -m live -v -ra
+
+      # Same as the Linux job's equivalent step: HTCondor's own daemon
+      # logs (SchedLog/StarterLog show why a job never launched, which
+      # nothing job-side can) plus every test's own working directory
+      # under tests/execution/ (conftest.py's tmp_path fixture).
+      - name: Package failure diagnostics
+        if: failure()
+        run: |
+          tar -czf condor-failure-diagnostics-windows.tar.gz "${env:HTCONDOR_INSTALLDIR}\log" "tests\execution"
+          exit 0
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: condor-failure-diagnostics-windows
+          path: condor-failure-diagnostics-windows.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7

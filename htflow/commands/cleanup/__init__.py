@@ -15,13 +15,13 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import logging
 import shutil
 import sys
 
 from htflow.engines.engine import Engine
 from htflow.exit_codes import EXIT_ENGINE_ACTIVE
+from htflow.utils.filelock import lock_exclusive_nonblocking
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def run(args: argparse.Namespace) -> None:
     if Engine.lock_file().exists():
         try:
             lock_fp = open(Engine.lock_file(), "w")
-            fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_exclusive_nonblocking(lock_fp)
         except BlockingIOError:
             if lock_fp:
                 lock_fp.close()

@@ -28,7 +28,7 @@ from htflow.utils.naming import (
 def sha256_hex(path) -> str:
     """Reference implementation used only to check hash_name() against, independent
     of its internals."""
-    return hashlib.sha256(str(Path(path)).encode("utf-8")).hexdigest()
+    return hashlib.sha256(Path(path).as_posix().encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
