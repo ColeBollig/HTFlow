@@ -53,7 +53,12 @@ class ManualNode(NodeInternal):
             desc = htcondor2.Submit(f.read())
 
         cmd = [ desc.expand("executable") ]
-        args = desc.expand("arguments") or ""
+
+        # 'arguments' is optional -- expand() raises KeyError if it's absent,
+        # so gate on get() first (same shape dataflow.py uses elsewhere).
+        args = ""
+        if desc.get("arguments") is not None:
+            args = desc.expand("arguments") or ""
 
         if args.startswith('"') and args.endswith('"') and len(args) >= 2:
             args = args[1:-1].replace('""', '"')

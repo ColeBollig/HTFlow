@@ -164,7 +164,7 @@ Initializes `ready_nodes`/`active_nodes` as empty sets.
 
 ## `ManualEngine`
 
-`htflow.engines.manual.ManualEngine` executes DAG nodes locally as subprocesses, one batch at a time. It reads the `executable` and `arguments` fields from each node's HTCondor submit file and spawns a `subprocess.Popen` process.
+`htflow.engines.manual.ManualEngine` executes DAG nodes locally as subprocesses, one batch at a time. It reads the `executable` and (optional) `arguments` fields from each node's HTCondor submit file and spawns a `subprocess.Popen` process.
 
 ### Constructor
 
@@ -210,7 +210,7 @@ Launches a subprocess for every node currently in the `READY` state, up to `conf
 
 If a node's process fails to start, it is immediately transitioned to `FAILURE` and its children are `ORPHAN`ed.
 
-`arguments` is tokenized via `shlex.split(args, posix=(os.name != "nt"))` — POSIX mode (which treats `\` as an escape character) everywhere except Windows, where it would otherwise mangle a literal backslash in a Windows-style path. On Windows, `executable` is also launched directly via `subprocess.Popen(cmd, shell=False)` exactly as on POSIX, which means a JDL like `executable = foo.sh` won't run — Windows has no shebang-line/executable-bit interpretation. See [Platform Support](../README.md#platform-support).
+`arguments` is optional — a JDL that declares none is launched as the bare `executable`, with no argv tail. When present it is tokenized via `shlex.split(args, posix=(os.name != "nt"))` — POSIX mode (which treats `\` as an escape character) everywhere except Windows, where it would otherwise mangle a literal backslash in a Windows-style path. On Windows, `executable` is also launched directly via `subprocess.Popen(cmd, shell=False)` exactly as on POSIX, which means a JDL like `executable = foo.sh` won't run — Windows has no shebang-line/executable-bit interpretation. See [Platform Support](../README.md#platform-support).
 
 #### `Update()`
 
@@ -260,7 +260,7 @@ exit(code)
 
 ### `Execute()`
 
-Reads the JDL file, builds the command from its `executable`/`arguments` fields, spawns the subprocess, and transitions to `NodeState.ACTIVE`. `Done()` does not itself write the state file; the caller (`ManualEngine.Update()`) appends the completion line after invoking `Done()`.
+Reads the JDL file, builds the command from its `executable` and, when the description declares one, `arguments` fields, spawns the subprocess, and transitions to `NodeState.ACTIVE`. `Done()` does not itself write the state file; the caller (`ManualEngine.Update()`) appends the completion line after invoking `Done()`.
 
 ---
 

@@ -67,14 +67,16 @@ def _no_shared_fs_transfer(args: argparse.Namespace, df: HTCondorDataFlow) -> di
     runs as a subprocess of this same job."""
     roots, _, leafs = df.groupings
 
-    inputs = [Path(p) for p in args.jdl]
+    # transfer_input_files resolves relative paths against wherever the job
+    # is actually SUBMITTED from, which can differ from htflow's own cwd
+    # here (e.g. a flowman node submitted later by DAGMan) -- resolve() to
+    # absolute now, while htflow's cwd is still the right base.
+    inputs = [Path(p).resolve() for p in args.jdl]
     if args.job_shapes:
-        inputs.append(Path(args.job_shapes))
-    # roots is already Path (local) or a validated URL str (df.generate()
-    # enforces ALLOWED_PROTOCOLS) -- pass through as-is, never re-wrap a URL
-    # in Path() or it corrupts (collapses the "//"). HTCondor's own plugin
-    # mechanism handles a URL transfer_input_files entry directly.
-    inputs += roots
+        inputs.append(Path(args.job_shapes).resolve())
+    # roots is Path (local) or a validated URL str -- resolve() only the
+    # Path ones; wrapping a URL in Path() corrupts it (collapses the "//").
+    inputs += [p.resolve() if isinstance(p, Path) else p for p in roots]
 
     _collision_check(inputs)
 
@@ -159,6 +161,47 @@ def add_parser(name: str, subparsers: argparse._SubParsersAction, common_parser:
         default=False,
         help="Print the generated submit description instead of submitting it",
     )
+    htcondor_p.add_argument(
+        "--submit-output",
+        dest="submit_output",
+        default=None,
+        metavar="PATH",
+        help="Path for the submitted job's own stdout (default: flowman/submit.<mode>.debug)",
+    )
+    htcondor_p.add_argument(
+        "--submit-error",
+        dest="submit_error",
+        default=None,
+        metavar="PATH",
+        help="Path for the submitted job's own stderr (default: same as --submit-output)",
+    )
+    htcondor_p.add_argument(
+        "--submit-log",
+        dest="submit_log",
+        default=None,
+        metavar="PATH",
+        help="Path for the submitted job's own HTCondor event log (default: flowman/submit.<mode>.log)",
+    )
+    htcondor_p.add_argument(
+        "-a", "--append",
+        dest="append",
+        action="append",
+        nargs=2,
+        metavar=("KEY", "VALUE"),
+        default=None,
+        help="Add a raw 'KEY = VALUE' submit command, applied after everything "
+             "else -- overrides any key htflow itself would set. Repeatable.",
+    )
+    htcondor_p.add_argument(
+        "-p", "--prepend",
+        dest="prepend",
+        action="append",
+        nargs=2,
+        metavar=("KEY", "VALUE"),
+        default=None,
+        help="Add a raw 'KEY = VALUE' submit command, applied before everything "
+             "else -- htflow's own defaults win on a collision. Repeatable.",
+    )
     return htcondor_p
 
 
@@ -231,22 +274,34 @@ def _build_submit(args: argparse.Namespace, df: HTCondorDataFlow) -> htcondor2.S
         logger.error("could not locate the '%s' executable on PATH", _python_name())
         sys.exit(EXIT_SETUP_FAILURE)
 
+    # No mkdir here -- deferred to run() after the --dry-run check, so a
+    # dry run touches nothing on disk.
     workdir = Engine.work_dir()
-    workdir.mkdir(exist_ok=True)
+
+    output_path = args.submit_output or str(workdir / f"submit.{mode}.debug")
+    error_path = args.submit_error or output_path
+    log_path = args.submit_log or str(workdir / f"submit.{mode}.log")
 
     transferred = mode == "manual" and args.no_shared_fs
     inner_args = _inner_execute_arguments(args, transferred)
 
-    desc = {
+    # --prepend seeds the dict first (htflow's own keys below win ties);
+    # --append is applied last (wins every tie, incl. MODE_DEFAULTS).
+    desc = dict(args.prepend) if args.prepend else {}
+
+    desc.update({
         "executable": python_path,
         "arguments": _submit_arguments(["-m", "htflow"] + inner_args),
         "transfer_executable": "false",
         "batch_name": f"flowman-{mode}+$(ClusterId)",
-        "output": str(workdir / f"submit.{mode}.debug"),
-        "error": str(workdir / f"submit.{mode}.debug"),
-        "log": str(workdir / f"submit.{mode}.log"),
-    }
+        "output": output_path,
+        "error": error_path,
+        "log": log_path,
+    })
     desc.update(MODE_DEFAULTS[mode](args, df))
+
+    if args.append:
+        desc.update(dict(args.append))
 
     return htcondor2.Submit(desc)
 
@@ -264,6 +319,10 @@ def run(df: HTCondorDataFlow, args: argparse.Namespace) -> None:
     if args.dry_run:
         print(str(desc))
         return
+
+    # Only created once we're actually submitting -- default output/error/log
+    # (and --no-shared-fs's returned manual.state) live here.
+    Engine.work_dir().mkdir(exist_ok=True)
 
     schedd = htcondor2.Schedd()
     result = schedd.submit(desc)
