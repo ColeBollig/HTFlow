@@ -126,6 +126,35 @@ def _wait_for_dag(condor_schedd, cluster_id: int, timeout: float):
     return _wait_for_history(condor_schedd, f"ClusterId == {cluster_id}", timeout)[0]
 
 
+def _describe_dag_nodes(condor_schedd, cluster_id: int) -> str:
+    """Best-effort per-node diagnostic summary, so a CI failure is
+    self-diagnosing from the pytest log alone instead of requiring a
+    manual download of the failure-diagnostics artifact."""
+    try:
+        ads = list(condor_schedd.history(
+            constraint=f"DAGManJobId == {cluster_id}", match=-1,
+            projection=["ClusterId", "ProcId", "Cmd", "ExitCode", "HoldReason", "DAGNodeName"],
+        ))
+        if not ads:
+            return f"  (no per-node history ads found for DAGManJobId == {cluster_id})"
+        return "\n".join(
+            f"  node={ad.get('DAGNodeName')!r} cluster={ad.get('ClusterId')}.{ad.get('ProcId')} "
+            f"cmd={ad.get('Cmd')!r} exit={ad.get('ExitCode')} hold={ad.get('HoldReason')!r}"
+            for ad in ads
+        )
+    except Exception as e:
+        return f"  (failed to fetch node diagnostics: {e})"
+
+
+def _assert_dag_success(condor_schedd, cluster_id: int, ad) -> None:
+    """assert ad['ExitCode'] == 0, attaching a per-node breakdown on
+    failure instead of just the top-level DAGMan exit code."""
+    assert ad["ExitCode"] == 0, (
+        f"DAG (cluster {cluster_id}) failed with ExitCode={ad['ExitCode']}:\n"
+        f"{_describe_dag_nodes(condor_schedd, cluster_id)}"
+    )
+
+
 def exec_order(exec_log_path):
     """Return list of task IDs in the order they were written to exec_log_path."""
     if not exec_log_path.exists():
@@ -351,7 +380,7 @@ class TestDagFlowmanManual:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        assert ad["ExitCode"] == 0
+        _assert_dag_success(condor_schedd, cluster_id, ad)
         assert exec_order(exec_log) == [1, 2, 3, 4, 5]
 
 
@@ -384,7 +413,7 @@ class TestDagFlowmanMonitor:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        assert ad["ExitCode"] == 0
+        _assert_dag_success(condor_schedd, cluster_id, ad)
         assert exec_order(exec_log) == [1, 2, 3]
 
         shared_log = flow_dir / "flowman" / "dataflow.shared.log"
@@ -415,7 +444,7 @@ class TestDagFlowmanNestedDiamond:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        assert ad["ExitCode"] == 0
+        _assert_dag_success(condor_schedd, cluster_id, ad)
         order = exec_order(exec_log)
         assert order[0] == 1  # top ran first
         assert order[-1] == 4  # bottom ran last
@@ -446,7 +475,7 @@ class TestDagFlowmanIndependentSiblings:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        assert ad["ExitCode"] == 0
+        _assert_dag_success(condor_schedd, cluster_id, ad)
         assert sorted(exec_order(exec_log)) == [1, 2]
         assert (alpha_dir / "flowman" / "manual.state").exists()
         assert (beta_dir / "flowman" / "manual.state").exists()
@@ -506,7 +535,7 @@ class TestDagFlowmanRetryRecovery:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        assert ad["ExitCode"] == 0
+        _assert_dag_success(condor_schedd, cluster_id, ad)
         order = exec_order(exec_log)
         # 'a' (id 1) must appear once -- manual.state skipped it on retry.
         # 'b' (id 2) appears once too, from its succeeding 2nd attempt.
@@ -546,7 +575,7 @@ class TestDagFlowmanNoSharedFs:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        assert ad["ExitCode"] == 0
+        _assert_dag_success(condor_schedd, cluster_id, ad)
         # --no-shared-fs sets no initialdir -- output lands wherever the job
         # was actually submitted from (tmp_path), not the flow's own dir.
         assert (tmp_path / "out.txt").read_text() == "hello from a DAG\n"
@@ -579,7 +608,7 @@ class TestDagFlowmanTwoLayerOrchestration:
 
             inner_ads = _wait_for_history(condor_schedd, f"{ATTR_MANAGER_ID} == {wrapper_id}", 30, expect=2)
 
-        assert dag_ad["ExitCode"] == 0
+        _assert_dag_success(condor_schedd, cluster_id, dag_ad)
         assert wrapper_ads[0]["ExitCode"] == 0
         assert len(inner_ads) == 2
         assert all(ad["ExitCode"] == 0 for ad in inner_ads)
