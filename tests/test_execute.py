@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import sys
 import logging
 import pytest
@@ -480,3 +481,81 @@ class TestSplitArguments:
         escaped space into a single token."""
         cmd = manual_engine_module._split_arguments(r"foo\ bar", windows=False)
         assert cmd == ["foo bar"]
+
+
+# ---------------------------------------------------------------------------
+# Optional 'arguments': a --dir-discovered flow, one node of which is
+# nothing but an executable
+# ---------------------------------------------------------------------------
+#
+# expand() raises KeyError for a key the description doesn't contain, so a
+# JDL with no 'arguments' line used to fail the node instead of running it.
+
+@pytest.fixture
+def bare_executable(tmp_path):
+    """An executable taking no arguments at all, which leaves a marker behind.
+
+    Windows has no shebang-line interpretation, so it gets a .bat rather than
+    the POSIX shell script ('break > file' being the batch idiom for creating
+    an empty file)."""
+    marker = tmp_path / "bare.ran"
+    if os.name == "nt":
+        script = tmp_path / "bare.bat"
+        script.write_text(f'@echo off\r\nbreak > "{marker}"\r\n')
+    else:
+        script = tmp_path / "bare.sh"
+        script.write_text(f"#!/bin/sh\n: > '{marker}'\n")
+        script.chmod(0o755)
+    return script, marker
+
+
+class TestExecuteDirectoryFlowNoArguments:
+    @pytest.fixture
+    def flow_dir(self, tmp_path, task_script, bare_executable):
+        """A directory containing nothing but the three JDLs of a linear flow:
+        root -> bare -> leaf. Only the middle node omits 'arguments'."""
+        script, _ = bare_executable
+        d = tmp_path / "flow"
+        d.mkdir()
+        (d / "root.sub").write_text(
+            f"executable = {sys.executable}\n"
+            f"arguments = {task_script} --id 1 --log exec.log --exit-code 0\n"
+            "transfer_output_files = root.dne\n"
+            "queue\n"
+        )
+        (d / "bare.sub").write_text(
+            f"executable = {script}\n"
+            "transfer_input_files = root.dne\n"
+            "transfer_output_files = bare.dne\n"
+            "queue\n"
+        )
+        (d / "leaf.sub").write_text(
+            f"executable = {sys.executable}\n"
+            f"arguments = {task_script} --id 3 --log exec.log --exit-code 0\n"
+            "transfer_input_files = bare.dne\n"
+            "queue\n"
+        )
+        return d
+
+    def test_all_success(self, flow_dir, htflow_log):
+        assert run_execute("--dir", str(flow_dir), log_file=htflow_log) == 0
+
+    def test_argument_less_node_actually_ran(self, flow_dir, bare_executable, htflow_log):
+        _, marker = bare_executable
+        run_execute("--dir", str(flow_dir), log_file=htflow_log)
+        assert marker.exists()
+
+    def test_ordering(self, flow_dir, htflow_log, exec_log):
+        """The argument-less node still ordered the flow -- id 3 only runs
+        because the node between it and id 1 succeeded."""
+        run_execute("--dir", str(flow_dir), log_file=htflow_log)
+        assert exec_order(exec_log) == [1, 3]
+
+    def test_executable_launched_without_arguments(self, flow_dir, bare_executable, htflow_log):
+        """No 'arguments' means no argv tail -- not an empty-string argument."""
+        script, _ = bare_executable
+        with patch.object(manual_engine_module.subprocess, "Popen") as popen:
+            popen.return_value.poll.return_value = 0
+            popen.return_value.returncode = 0
+            run_execute("--dir", str(flow_dir), log_file=htflow_log)
+        assert [str(script)] in [list(call.args[0]) for call in popen.call_args_list]
