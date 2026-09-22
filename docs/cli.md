@@ -144,9 +144,18 @@ htflow submit htcondor --mode monitor --dir ./jobs/ [--interval SECONDS] [--dry-
 | `--interval SECONDS` | Polling interval passed through to the inner `htflow execute` (default: `1.0`) |
 | `--no-shared-fs` | `--mode manual` only. Don't assume a shared filesystem with the execute node: really transfers root/JDL/job-shapes files in and leaf files + `flowman/` back out via `transfer_input_files`/`transfer_output_files`, instead of assuming they're already there. |
 | `--container IMAGE` | `--mode manual` only. Sets `container_image`, making the job a container job. |
-| `--dry-run` | Print the generated HTCondor submit description instead of submitting it |
+| `--dry-run` | Print the generated HTCondor submit description instead of submitting it. Touches nothing on disk — `flowman/` is only created once a submission actually happens (see below). |
+| `--submit-output PATH` | Where the submitted job's own stdout goes (default: `flowman/submit.<mode>.debug`) |
+| `--submit-error PATH` | Where the submitted job's own stderr goes (default: same file as `--submit-output`, matching the default's own combined stream) |
+| `--submit-log PATH` | Where the submitted job's own HTCondor event log goes (default: `flowman/submit.<mode>.log`) |
+| `-a, --append KEY VALUE` | Add a raw `KEY = VALUE` submit command, applied **after** everything else — overrides any key htflow itself sets, including `universe`/`batch_name`/mode defaults. Repeatable; a later `--append` of the same `KEY` wins. |
+| `-p, --prepend KEY VALUE` | Add a raw `KEY = VALUE` submit command, applied **before** everything else — htflow's own defaults win over it if the same `KEY` is set elsewhere (use `--append` to force an override instead). Repeatable. |
 
 Also accepts the shared [`--job-shapes PATH`](#job-type-shapes-flag) and [Path Resolution Flags](#path-resolution-flags), forwarded to the inner `htflow execute <mode>` invocation exactly as given (all `--jdl`/`--dir`-resolved files are passed through as absolute paths — or, under `--no-shared-fs`, their transferred basenames — so the submitted job doesn't depend on its own working directory to find them).
+
+`-a`/`--append` and `-p`/`--prepend` are an escape hatch for pool-specific submit commands `htflow` doesn't otherwise know about (`requirements`, `+WantFlocking`, `request_gpus`, ...) — layered onto the description as plain dict entries in this order: `--prepend` values seed the description, then every key `htflow` itself computes (`executable`, `arguments`, `output`/`error`/`log`, the mode's own `universe`/transfer/`getenv` settings, `container_image`) is applied on top, then `--append` values are applied last. A value is inserted verbatim — `htflow` does not quote it, so a string literal needs its own quotes (e.g. `--append requirements '(OpSys == "LINUX")'`).
+
+`flowman/` (the default location for `--submit-output`/`--submit-error`/`--submit-log`, and where `--no-shared-fs`'s `manual.state` comes back via `transfer_output_files`) is created lazily, right before the job is actually handed to the schedd — not while the submit description is being built, and never under `--dry-run`.
 
 The generated submit description runs `python -m htflow execute <mode> ...` (`executable` resolved via `PATH` to the `python`/`python3` interpreter, not the `htflow` console-script entry point itself — that's a POSIX shebang script vs. a compiled `.exe` launcher on Windows, while `python -m htflow` means the same thing on both). Everything else about the job's execution environment is assembled per mode (`htflow/commands/submit/htcondor.py`'s `MODE_DEFAULTS`), not uniformly, because the two universes give different guarantees:
 

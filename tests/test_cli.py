@@ -580,6 +580,28 @@ class TestSubmitHtcondorNoSharedFs:
         assert a.name in out
         assert "a_out.txt" in out
 
+    def test_dir_input_transfer_paths_are_absolute(self, tmp_path, capsys, monkeypatch):
+        """Regression: transfer_input_files must be absolute even when --dir
+        or a root file's own entry was written relative -- otherwise the
+        .sub file breaks once submitted from a directory other than the one
+        htflow ran in (e.g. a flowman node driven by DAGMan)."""
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        monkeypatch.chdir(tmp_path)
+        jobs = tmp_path / "jobs"
+        jobs.mkdir()
+        (jobs / "a.sub").write_text("executable = a.sh\ntransfer_input_files = ext.txt\nqueue\n")
+        (tmp_path / "ext.txt").write_text("x")
+
+        code = run_cli("submit", "htcondor", "--dir", "jobs", "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 0
+        out = capsys.readouterr().out
+        transfer_line = next(l for l in out.splitlines() if l.startswith("transfer_input_files"))
+        entries = [e.strip() for e in transfer_line.split("=", 1)[1].strip().split(",")]
+
+        assert all(Path(e).is_absolute() for e in entries), entries
+        assert str(jobs / "a.sub") in entries
+        assert str(tmp_path / "ext.txt") in entries
+
     def test_default_mode_sets_no_transfer_keys(self, make_sub, capsys, monkeypatch):
         monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
         a = make_sub("a")
@@ -635,6 +657,209 @@ class TestSubmitHtcondorContainer:
         code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--container", 'weird"image', "--dry-run")
         assert code == 0
         assert 'container_image = "weird""image"' in capsys.readouterr().out
+
+
+class TestSubmitHtcondorDryRunNoSideEffects:
+    """--dry-run must touch nothing on disk -- it only prints the submit
+    description. work_dir() (flowman/) is created lazily in run(), after the
+    dry-run check, not as a side effect of building the description."""
+
+    def test_no_workdir_created(self, make_sub, tmp_path, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        monkeypatch.chdir(tmp_path)
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run") == 0
+        assert not (tmp_path / "flowman").exists()
+
+    def test_no_workdir_created_no_shared_fs(self, make_sub, tmp_path, monkeypatch):
+        """Same check under --no-shared-fs, whose transfer_output_files
+        entry also names flowman/ -- that's just a string in the printed
+        description, not a real mkdir."""
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        monkeypatch.chdir(tmp_path)
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--no-shared-fs", "--dry-run")
+        assert code == 0
+        assert not (tmp_path / "flowman").exists()
+
+
+class TestSubmitHtcondorLogPaths:
+    """--submit-output/--submit-error/--submit-log override where the
+    submitted job's own stdout/stderr/HTCondor log land."""
+
+    def test_defaults_under_flowman(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run") == 0
+        out = capsys.readouterr().out
+        assert "output = flowman/submit.manual.debug" in out
+        assert "error = flowman/submit.manual.debug" in out
+        assert "log = flowman/submit.manual.log" in out
+
+    def test_submit_output_overrides_output_and_error_default(self, make_sub, tmp_path, capsys, monkeypatch):
+        """--submit-output alone overrides the default error path too, since
+        error mirrors output unless --submit-error is given separately."""
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        out_path = tmp_path / "job.out"
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--submit-output", str(out_path), "--dry-run")
+        assert code == 0
+        out = capsys.readouterr().out
+        assert f"output = {out_path}" in out
+        assert f"error = {out_path}" in out
+
+    def test_submit_error_independent_of_output(self, make_sub, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        out_path = tmp_path / "job.out"
+        err_path = tmp_path / "job.err"
+        code = run_cli(
+            "submit", "htcondor", "--jdl", str(a), "--mode", "manual",
+            "--submit-output", str(out_path), "--submit-error", str(err_path), "--dry-run",
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert f"output = {out_path}" in out
+        assert f"error = {err_path}" in out
+
+    def test_submit_log_independent(self, make_sub, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        log_path = tmp_path / "job.log"
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--submit-log", str(log_path), "--dry-run")
+        assert code == 0
+        out = capsys.readouterr().out
+        assert f"log = {log_path}" in out
+        assert "output = flowman/submit.manual.debug" in out
+
+    def test_all_three_independent(self, make_sub, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        out_path = tmp_path / "job.out"
+        err_path = tmp_path / "job.err"
+        log_path = tmp_path / "job.log"
+        code = run_cli(
+            "submit", "htcondor", "--jdl", str(a), "--mode", "manual",
+            "--submit-output", str(out_path), "--submit-error", str(err_path),
+            "--submit-log", str(log_path), "--dry-run",
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert f"output = {out_path}" in out
+        assert f"error = {err_path}" in out
+        assert f"log = {log_path}" in out
+
+    def test_works_with_monitor_mode(self, make_sub, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        log_path = tmp_path / "job.log"
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "monitor", "--submit-log", str(log_path), "--dry-run")
+        assert code == 0
+        assert f"log = {log_path}" in capsys.readouterr().out
+
+
+class TestSubmitHtcondorAppendPrepend:
+    """-a/--append and -p/--prepend inject raw 'KEY = VALUE' submit commands.
+    --append is layered on last (wins over everything, including htflow's own
+    keys); --prepend is seeded first (htflow's own keys win over it)."""
+
+    def test_append_adds_new_key(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "-a", "request_memory", "512M", "--dry-run")
+        assert code == 0
+        assert "request_memory = 512M" in capsys.readouterr().out
+
+    def test_append_short_flag(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--append", "request_memory", "512M", "--dry-run")
+        assert code == 0
+        assert "request_memory = 512M" in capsys.readouterr().out
+
+    def test_append_overrides_htflow_own_key(self, make_sub, capsys, monkeypatch):
+        """batch_name is computed by htflow itself -- --append still wins."""
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "-a", "batch_name", "custom-name", "--dry-run")
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "batch_name = custom-name" in out
+        assert "flowman-manual" not in out
+
+    def test_append_overrides_mode_default(self, make_sub, capsys, monkeypatch):
+        """universe comes from MODE_DEFAULTS, applied before --append -- still overridden."""
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "-a", "universe", "docker", "--dry-run")
+        assert code == 0
+        assert "universe = docker" in capsys.readouterr().out
+
+    def test_append_repeatable(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli(
+            "submit", "htcondor", "--jdl", str(a), "--mode", "manual",
+            "-a", "request_memory", "512M", "-a", "request_disk", "1G", "--dry-run",
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "request_memory = 512M" in out
+        assert "request_disk = 1G" in out
+
+    def test_append_same_key_twice_last_wins(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli(
+            "submit", "htcondor", "--jdl", str(a), "--mode", "manual",
+            "-a", "rank", "1", "-a", "rank", "2", "--dry-run",
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "rank = 2" in out
+        assert "rank = 1" not in out
+
+    def test_prepend_adds_new_key(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "-p", "request_disk", "1G", "--dry-run")
+        assert code == 0
+        assert "request_disk = 1G" in capsys.readouterr().out
+
+    def test_prepend_short_flag(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--prepend", "request_disk", "1G", "--dry-run")
+        assert code == 0
+        assert "request_disk = 1G" in capsys.readouterr().out
+
+    def test_prepend_loses_to_htflow_own_key(self, make_sub, capsys, monkeypatch):
+        """universe is set by MODE_DEFAULTS after --prepend is seeded -- the
+        default wins."""
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "-p", "universe", "docker", "--dry-run")
+        assert code == 0
+        assert "universe = vanilla" in capsys.readouterr().out
+
+    def test_append_wins_over_prepend_for_same_key(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli(
+            "submit", "htcondor", "--jdl", str(a), "--mode", "manual",
+            "-p", "rank", "5", "-a", "rank", "10", "--dry-run",
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "rank = 10" in out
+        assert "rank = 5" not in out
+
+    def test_absent_by_default(self, make_sub, capsys, monkeypatch):
+        monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
+        a = make_sub("a")
+        code = run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run")
+        assert code == 0
+        assert "request_memory" not in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
