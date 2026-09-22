@@ -49,23 +49,23 @@ Run a specific test by name:
 ctest -R test_change_directory
 ```
 
-CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_config`, `test_execute`, `test_filelock`, `test_sources`, `test_naming`, `test_monitor`, `test_submit`. `test_monitor` and `test_submit` both skip gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
+CTest test names match the file stems: `test_dag`, `test_dataflow`, `test_change_directory`, `test_cli`, `test_config`, `test_execute`, `test_filelock`, `test_sources`, `test_naming`, `test_monitor`, `test_submit`, `test_dagman`. `test_monitor`, `test_submit`, and `test_dagman` all skip gracefully under `ctest` if no HTCondor Schedd is reachable — see below for making that a hard failure instead.
 
 Each `ctest` target also carries a `LABELS` property mirroring the pytest markers below, so you can filter by category instead of by name. Labels are per-file, since `ctest` targets are whole files:
 
 | Target | LABELS |
 |---|---|
-| `test_monitor`, `test_submit` | `integration;live;condor;slow` |
+| `test_monitor`, `test_submit`, `test_dagman` | `integration;live;condor;slow` |
 | `test_dataflow` | `unit;regression;fast` |
 | the other 8 | `unit;fast` |
 
 ```sh
-ctest -L unit               # every file except test_monitor/test_submit
-ctest -L integration        # only test_monitor and test_submit
+ctest -L unit               # every file except test_monitor/test_submit/test_dagman
+ctest -L integration        # only test_monitor, test_submit, and test_dagman
 ctest -L live               # same as -L integration here
 ctest -L condor             # same again -- HTCondor is the only live backend this suite has
 ctest -L regression         # test_dataflow (whole file; see below)
-ctest -L slow               # test_monitor and test_submit
+ctest -L slow               # test_monitor, test_submit, and test_dagman
 ctest -LE live              # everything except the live-Schedd tests
 ```
 
@@ -89,22 +89,22 @@ pytest test_change_directory.py -v
 
 ---
 
-### `test_monitor.py` / `test_submit.py` (require a live HTCondor Schedd)
+### `test_monitor.py` / `test_submit.py` / `test_dagman.py` (require a live HTCondor Schedd)
 
-`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. `test_submit.py` does the same for `htflow submit htcondor`: it submits the real wrapper job (`--mode manual` as vanilla universe, `--mode monitor` as local universe) and, for `--mode monitor`, the real inner job the wrapper itself submits, then reads both jobs' actual `ExitCode` back from `condor_schedd.history()` rather than from `htflow submit`'s own process exit code (which only reflects the submission succeeding, not the job's eventual result). If no Schedd is found either file **skips** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead. `.github/workflows/live-condor-tests.yml` does exactly this on two real pools, so a broken/missing Schedd fails CI instead of silently skipping the tests: a `minicondor` on AlmaLinux 10, and a personal HTCondor pool installed via the Windows MSI on `windows-latest`.
+`test_monitor.py` exercises `MonitorEngine` end-to-end against a real, reachable `htcondor2.Schedd()` (e.g. a local `minicondor`) -- unlike the rest of the suite, it submits and watches actual HTCondor jobs. `test_submit.py` does the same for `htflow submit htcondor`: it submits the real wrapper job (`--mode manual` as vanilla universe, `--mode monitor` as local universe) and, for `--mode monitor`, the real inner job the wrapper itself submits, then reads both jobs' actual `ExitCode` back from `condor_schedd.history()` rather than from `htflow submit`'s own process exit code (which only reflects the submission succeeding, not the job's eventual result). `test_dagman.py` goes one level further: it generates a flowman node's own submit file via the real `htflow submit htcondor --dry-run` (exactly as a user would) and then drives it with real DAGMan (`condor_submit_dag`), across several topologies -- linear, a flowman node whose own inner flow is a diamond, two independent flowman nodes as DAG siblings, failure propagation through a flowman node, `RETRY`-driven recovery, `--no-shared-fs`, and two-layer `--mode monitor` orchestration (DAGMan -> flowman -> further real HTCondor jobs). It's the only file in this suite that invokes `condor_submit_dag` at all, and it caught a real bug: `transfer_input_files` entries built from a relative `--dir`/root path weren't resolved to absolute, so a flowman `.sub` file broke the moment DAGMan submitted it from a different directory than `htflow` itself ran in to generate it. If no Schedd is found, all three files **skip** by default so the rest of the suite still runs; set `HTFLOW_REQUIRE_CONDOR=1` to make a missing Schedd a hard failure instead. `.github/workflows/live-condor-tests.yml` does exactly this on two real pools, so a broken/missing Schedd fails CI instead of silently skipping the tests: a `minicondor` on AlmaLinux 10, and a personal HTCondor pool installed via the Windows MSI on `windows-latest`.
 
 ```sh
-HTFLOW_REQUIRE_CONDOR=1 pytest tests/test_monitor.py tests/test_submit.py -q
+HTFLOW_REQUIRE_CONDOR=1 pytest tests/test_monitor.py tests/test_submit.py tests/test_dagman.py -q
 ```
 
 Because each test is mostly waiting on real daemon round trips (submit, schedule, run, report back), it's I/O-bound rather than CPU-bound -- a good fit for parallelizing across processes even without extra cores. Install `pytest-xdist` and run with `-n`:
 
 ```sh
 pip install pytest-xdist
-pytest -n auto tests/test_monitor.py tests/test_submit.py -q
+pytest -n auto tests/test_monitor.py tests/test_submit.py tests/test_dagman.py -q
 ```
 
-`CMakeLists.txt` detects `pytest-xdist` at configure time and adds `-n auto` to these two `ctest` targets automatically when it's installed (falling back to sequential, with a `message(STATUS ...)` note, when it isn't) -- so a plain `ctest` run gets this speedup for free, no flag needed. This parallelizes *within* each file's own `pytest` invocation (worker processes pulling from the same item queue), not by splitting either file into more `ctest` targets.
+`CMakeLists.txt` detects `pytest-xdist` at configure time and adds `-n auto` to these three `ctest` targets automatically when it's installed (falling back to sequential, with a `message(STATUS ...)` note, when it isn't) -- so a plain `ctest` run gets this speedup for free, no flag needed. This parallelizes *within* each file's own `pytest` invocation (worker processes pulling from the same item queue), not by splitting any of them into more `ctest` targets.
 
 Each test uses its own isolated `tmp_path` (own `flowman/` lock directory, own batch name), so they don't collide when run concurrently against the same Schedd.
 

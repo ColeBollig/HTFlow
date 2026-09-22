@@ -71,4 +71,5 @@ create_test(test_sources.py LABELS "unit;fast")
 create_test(test_naming.py LABELS "unit;fast")
 create_test(test_monitor.py LABELS "integration;live;condor;slow" PYTEST_ARGS ${LIVE_CONDOR_XDIST_ARGS})
 create_test(test_submit.py LABELS "integration;live;condor;slow" PYTEST_ARGS ${LIVE_CONDOR_XDIST_ARGS})
+create_test(test_dagman.py LABELS "integration;live;condor;slow" PYTEST_ARGS ${LIVE_CONDOR_XDIST_ARGS})
 
