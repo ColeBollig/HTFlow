@@ -692,9 +692,10 @@ class TestSubmitHtcondorLogPaths:
         a = make_sub("a")
         assert run_cli("submit", "htcondor", "--jdl", str(a), "--mode", "manual", "--dry-run") == 0
         out = capsys.readouterr().out
-        assert "output = flowman/submit.manual.debug" in out
-        assert "error = flowman/submit.manual.debug" in out
-        assert "log = flowman/submit.manual.log" in out
+        # str(Path("flowman") / ...) uses the OS's own separator (\ on Windows).
+        assert f"output = {Path('flowman') / 'submit.manual.debug'}" in out
+        assert f"error = {Path('flowman') / 'submit.manual.debug'}" in out
+        assert f"log = {Path('flowman') / 'submit.manual.log'}" in out
 
     def test_submit_output_overrides_output_and_error_default(self, make_sub, tmp_path, capsys, monkeypatch):
         """--submit-output alone overrides the default error path too, since
@@ -730,7 +731,7 @@ class TestSubmitHtcondorLogPaths:
         assert code == 0
         out = capsys.readouterr().out
         assert f"log = {log_path}" in out
-        assert "output = flowman/submit.manual.debug" in out
+        assert f"output = {Path('flowman') / 'submit.manual.debug'}" in out
 
     def test_all_three_independent(self, make_sub, tmp_path, capsys, monkeypatch):
         monkeypatch.setattr(submit_htcondor.shutil, "which", lambda name: "/usr/bin/python3")
