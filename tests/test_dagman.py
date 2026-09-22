@@ -126,10 +126,15 @@ def _wait_for_dag(condor_schedd, cluster_id: int, timeout: float):
     return _wait_for_history(condor_schedd, f"ClusterId == {cluster_id}", timeout)[0]
 
 
-def _describe_dag_nodes(condor_schedd, cluster_id: int) -> str:
+def _describe_dag_nodes(condor_schedd, cluster_id: int, tmp_path: Path = None) -> str:
     """Best-effort per-node diagnostic summary, so a CI failure is
-    self-diagnosing from the pytest log alone instead of requiring a
-    manual download of the failure-diagnostics artifact."""
+    self-diagnosing from the pytest log alone instead of requiring a manual
+    download of the failure-diagnostics artifact. When tmp_path is given,
+    also tails any failed node's own --submit-output file
+    (tmp_path/<node>.debug -- see _generate_flowman_sub) -- HTCondor
+    redirects the job's stdout there, which is where htflow's own log
+    output for a flowman-node-level failure actually shows up (a HELD job
+    never gets this far at all)."""
     try:
         ads = list(condor_schedd.history(
             constraint=f"DAGManJobId == {cluster_id}", match=-1,
@@ -137,21 +142,30 @@ def _describe_dag_nodes(condor_schedd, cluster_id: int) -> str:
         ))
         if not ads:
             return f"  (no per-node history ads found for DAGManJobId == {cluster_id})"
-        return "\n".join(
-            f"  node={ad.get('DAGNodeName')!r} cluster={ad.get('ClusterId')}.{ad.get('ProcId')} "
-            f"cmd={ad.get('Cmd')!r} exit={ad.get('ExitCode')} hold={ad.get('HoldReason')!r}"
-            for ad in ads
-        )
+        lines = []
+        for ad in ads:
+            node = ad.get("DAGNodeName")
+            lines.append(
+                f"  node={node!r} cluster={ad.get('ClusterId')}.{ad.get('ProcId')} "
+                f"cmd={ad.get('Cmd')!r} exit={ad.get('ExitCode')} hold={ad.get('HoldReason')!r}"
+            )
+            if tmp_path is not None and ad.get("ExitCode") not in (0, None):
+                debug_file = tmp_path / f"{node}.debug"
+                if debug_file.exists():
+                    tail = debug_file.read_text(errors="replace").strip().splitlines()[-40:]
+                    lines.append(f"    --- {debug_file.name} (last {len(tail)} line(s)) ---")
+                    lines.extend(f"    {line}" for line in tail)
+        return "\n".join(lines)
     except Exception as e:
         return f"  (failed to fetch node diagnostics: {e})"
 
 
-def _assert_dag_success(condor_schedd, cluster_id: int, ad) -> None:
-    """assert ad['ExitCode'] == 0, attaching a per-node breakdown on
-    failure instead of just the top-level DAGMan exit code."""
+def _assert_dag_success(condor_schedd, cluster_id: int, ad, tmp_path: Path = None) -> None:
+    """assert ad['ExitCode'] == 0, attaching a per-node breakdown (and, for
+    any failed node, its own debug output) on failure."""
     assert ad["ExitCode"] == 0, (
         f"DAG (cluster {cluster_id}) failed with ExitCode={ad['ExitCode']}:\n"
-        f"{_describe_dag_nodes(condor_schedd, cluster_id)}"
+        f"{_describe_dag_nodes(condor_schedd, cluster_id, tmp_path)}"
     )
 
 
@@ -380,7 +394,7 @@ class TestDagFlowmanManual:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        _assert_dag_success(condor_schedd, cluster_id, ad)
+        _assert_dag_success(condor_schedd, cluster_id, ad, tmp_path)
         assert exec_order(exec_log) == [1, 2, 3, 4, 5]
 
 
@@ -413,7 +427,7 @@ class TestDagFlowmanMonitor:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        _assert_dag_success(condor_schedd, cluster_id, ad)
+        _assert_dag_success(condor_schedd, cluster_id, ad, tmp_path)
         assert exec_order(exec_log) == [1, 2, 3]
 
         shared_log = flow_dir / "flowman" / "dataflow.shared.log"
@@ -444,7 +458,7 @@ class TestDagFlowmanNestedDiamond:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        _assert_dag_success(condor_schedd, cluster_id, ad)
+        _assert_dag_success(condor_schedd, cluster_id, ad, tmp_path)
         order = exec_order(exec_log)
         assert order[0] == 1  # top ran first
         assert order[-1] == 4  # bottom ran last
@@ -455,18 +469,28 @@ class TestDagFlowmanNestedDiamond:
 
 class TestDagFlowmanIndependentSiblings:
     """Two flowman(manual) nodes as DAG siblings -- proves two separate
-    flowman/ locks never interfere when DAGMan runs them concurrently."""
+    flowman/ locks never interfere when DAGMan runs them concurrently.
+
+    Each sibling gets its OWN log file (not the usual shared exec_log) --
+    "independent" means no shared resource between them at all, including
+    the one both would otherwise contend for. This also sidesteps a real
+    Windows-only failure: alpha and beta are two separate HTCondor jobs,
+    likely each running under vanilla universe's own per-job low-privilege
+    execute account -- a shared file one of them creates can end up with an
+    ACL the other's account can't write to. TestDagFlowmanNestedDiamond's
+    concurrent writers, by contrast, are subprocesses of one wrapper job's
+    own process (same account), and passes reliably."""
 
     def test_both_succeed_independently(
         self, capsys, tmp_path, condor_schedd,
-        make_inner_manual_jdl, write_dag, exec_log,
+        make_inner_manual_jdl, write_dag,
     ):
         alpha_dir = tmp_path / "alpha"
-        make_inner_manual_jdl(alpha_dir, "a", task_id=1)
+        make_inner_manual_jdl(alpha_dir, "a", task_id=1, log="../alpha.exec.log")
         _generate_flowman_sub(capsys, tmp_path=tmp_path, flow_dir=alpha_dir, name="alpha", mode="manual")
 
         beta_dir = tmp_path / "beta"
-        make_inner_manual_jdl(beta_dir, "b", task_id=2)
+        make_inner_manual_jdl(beta_dir, "b", task_id=2, log="../beta.exec.log")
         _generate_flowman_sub(capsys, tmp_path=tmp_path, flow_dir=beta_dir, name="beta", mode="manual")
 
         dag = write_dag("dag", ["JOB alpha alpha.sub", "JOB beta beta.sub"])
@@ -475,8 +499,9 @@ class TestDagFlowmanIndependentSiblings:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        _assert_dag_success(condor_schedd, cluster_id, ad)
-        assert sorted(exec_order(exec_log)) == [1, 2]
+        _assert_dag_success(condor_schedd, cluster_id, ad, tmp_path)
+        assert exec_order(tmp_path / "alpha.exec.log") == [1]
+        assert exec_order(tmp_path / "beta.exec.log") == [2]
         assert (alpha_dir / "flowman" / "manual.state").exists()
         assert (beta_dir / "flowman" / "manual.state").exists()
 
@@ -535,7 +560,7 @@ class TestDagFlowmanRetryRecovery:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        _assert_dag_success(condor_schedd, cluster_id, ad)
+        _assert_dag_success(condor_schedd, cluster_id, ad, tmp_path)
         order = exec_order(exec_log)
         # 'a' (id 1) must appear once -- manual.state skipped it on retry.
         # 'b' (id 2) appears once too, from its succeeding 2nd attempt.
@@ -575,7 +600,7 @@ class TestDagFlowmanNoSharedFs:
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
-        _assert_dag_success(condor_schedd, cluster_id, ad)
+        _assert_dag_success(condor_schedd, cluster_id, ad, tmp_path)
         # --no-shared-fs sets no initialdir -- output lands wherever the job
         # was actually submitted from (tmp_path), not the flow's own dir.
         assert (tmp_path / "out.txt").read_text() == "hello from a DAG\n"
@@ -608,7 +633,7 @@ class TestDagFlowmanTwoLayerOrchestration:
 
             inner_ads = _wait_for_history(condor_schedd, f"{ATTR_MANAGER_ID} == {wrapper_id}", 30, expect=2)
 
-        _assert_dag_success(condor_schedd, cluster_id, dag_ad)
+        _assert_dag_success(condor_schedd, cluster_id, dag_ad, tmp_path)
         assert wrapper_ads[0]["ExitCode"] == 0
         assert len(inner_ads) == 2
         assert all(ad["ExitCode"] == 0 for ad in inner_ads)
