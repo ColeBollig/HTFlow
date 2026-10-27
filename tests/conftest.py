@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import shutil
+import subprocess
 import pytest
 from pathlib import Path
 
@@ -222,6 +223,13 @@ def tmp_path(request):
     if path.exists():
         shutil.rmtree(path)
     path.mkdir(parents=True)
+    if os.name == "nt":
+        # Vanilla-universe jobs on Windows each run as their own dynamic
+        # condor-slotN_M account, so a file one job creates (e.g. a shared
+        # exec.log) is unwritable by the next job unless the directory
+        # grants inheritable access to everyone.
+        subprocess.run(["icacls", str(path), "/grant", "Everyone:(OI)(CI)M"],
+                       check=True, stdout=subprocess.DEVNULL)
     return path
 
 
