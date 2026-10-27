@@ -14,8 +14,10 @@
 
 # Live integration tests for a "flowman" node -- a real HTCondor job running
 # an htflow engine, generated via 'htflow submit htcondor --dry-run' exactly
-# as a user would -- driven by real DAGMan (condor_submit_dag). First file in
-# this suite to actually invoke condor_submit_dag.
+# as a user would -- driven by real DAGMan, submitted through the htcondor2
+# API (Submit.from_dag() + Schedd.submit(), the library equivalent of
+# condor_submit_dag) rather than shelling out to that CLI tool. First file
+# in this suite to actually drive a DAG.
 #
 # Gated by the `condor_schedd` fixture (tests/conftest.py): skips (or, with
 # HTFLOW_REQUIRE_CONDOR=1, fails) when no Schedd is reachable, and is
@@ -26,11 +28,9 @@
 # the DAGMan cluster only leaves the queue once every node it manages,
 # including a flowman wrapper and anything it in turn submits, has finished.
 
-import re
 import sys
 import time
 import logging
-import subprocess
 import pytest
 from pathlib import Path
 from contextlib import contextmanager
@@ -54,8 +54,6 @@ DAG_WAIT_SECONDS = 200
 WATCHDOG_SECONDS = 240
 
 pytestmark = [pytest.mark.usefixtures("condor_schedd"), pytest.mark.timeout(WATCHDOG_SECONDS)]
-
-CLUSTER_RE = re.compile(r"submitted to cluster (\d+)")
 
 
 # ---------------------------------------------------------------------------
@@ -91,20 +89,21 @@ def _generate_flowman_sub(capsys, *, tmp_path, flow_dir, name, mode, extra_args=
     return sub_path
 
 
-def _submit_dag(dag_path: Path, cwd: Path) -> int:
-    """Run condor_submit_dag for real -- a native HTCondor CLI tool, not
-    htflow's own -- and return the DAGMan manager job's own ClusterId."""
-    result = subprocess.run(
-        ["condor_submit_dag", str(dag_path)],
-        cwd=str(cwd), capture_output=True, text=True, timeout=60,
-    )
-    assert result.returncode == 0, (
-        f"condor_submit_dag failed (exit {result.returncode}):\n"
-        f"stdout={result.stdout}\nstderr={result.stderr}"
-    )
-    m = CLUSTER_RE.search(result.stdout)
-    assert m, f"expected 'submitted to cluster <id>' in condor_submit_dag output, got: {result.stdout!r}"
-    return int(m.group(1))
+def _submit_dag(condor_schedd, dag_path: Path, cwd: Path) -> int:
+    """Build and submit the DAG via the real htcondor2 API --
+    Submit.from_dag() (the library equivalent of condor_submit_dag) plus
+    Schedd.submit() -- instead of shelling out to the condor_submit_dag CLI
+    tool. Must run from cwd (dag_path's own directory): the submitted
+    DAGMan job's own Iwd comes from the calling process's cwd at submit()
+    time, not from the .dag file's location, and DAGMan then resolves each
+    JOB line's own relative submit-file path against its Iwd -- confirmed
+    against a live Schedd: submitting from an unrelated cwd silently
+    resolved 'JOB leaf leaf.sub' against that wrong directory and failed
+    the node instead of raising anything client-side."""
+    with ChangeDir(cwd):
+        desc = htcondor2.Submit.from_dag(dag_path.name)
+        result = condor_schedd.submit(desc)
+    return result.cluster()
 
 
 def _wait_for_history(condor_schedd, constraint: str, timeout: float, expect: int = 1):
@@ -390,7 +389,7 @@ class TestDagFlowmanManual:
             "PARENT flow CHILD outer_b",
         ])
 
-        cluster_id = _submit_dag(dag, tmp_path)
+        cluster_id = _submit_dag(condor_schedd, dag, tmp_path)
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
@@ -423,7 +422,7 @@ class TestDagFlowmanMonitor:
             "PARENT flow CHILD outer_b",
         ])
 
-        cluster_id = _submit_dag(dag, tmp_path)
+        cluster_id = _submit_dag(condor_schedd, dag, tmp_path)
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
@@ -454,7 +453,7 @@ class TestDagFlowmanNestedDiamond:
 
         dag = write_dag("dag", ["JOB flow flow.sub"])
 
-        cluster_id = _submit_dag(dag, tmp_path)
+        cluster_id = _submit_dag(condor_schedd, dag, tmp_path)
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
@@ -495,7 +494,7 @@ class TestDagFlowmanIndependentSiblings:
 
         dag = write_dag("dag", ["JOB alpha alpha.sub", "JOB beta beta.sub"])
 
-        cluster_id = _submit_dag(dag, tmp_path)
+        cluster_id = _submit_dag(condor_schedd, dag, tmp_path)
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
@@ -529,7 +528,7 @@ class TestDagFlowmanFailurePropagation:
             "PARENT flow CHILD after",
         ])
 
-        cluster_id = _submit_dag(dag, tmp_path)
+        cluster_id = _submit_dag(condor_schedd, dag, tmp_path)
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
@@ -556,7 +555,7 @@ class TestDagFlowmanRetryRecovery:
 
         dag = write_dag("dag", ["JOB flow flow.sub", "RETRY flow 1"])
 
-        cluster_id = _submit_dag(dag, tmp_path)
+        cluster_id = _submit_dag(condor_schedd, dag, tmp_path)
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
@@ -596,7 +595,7 @@ class TestDagFlowmanNoSharedFs:
 
         dag = write_dag("dag", ["JOB flow flow.sub"])
 
-        cluster_id = _submit_dag(dag, tmp_path)
+        cluster_id = _submit_dag(condor_schedd, dag, tmp_path)
         with _cleanup_dag(condor_schedd, cluster_id):
             ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 
@@ -623,7 +622,7 @@ class TestDagFlowmanTwoLayerOrchestration:
 
         dag = write_dag("dag", ["JOB flow flow.sub"])
 
-        cluster_id = _submit_dag(dag, tmp_path)
+        cluster_id = _submit_dag(condor_schedd, dag, tmp_path)
         with _cleanup_dag(condor_schedd, cluster_id):
             dag_ad = _wait_for_dag(condor_schedd, cluster_id, DAG_WAIT_SECONDS)
 

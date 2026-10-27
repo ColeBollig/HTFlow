@@ -61,7 +61,10 @@ jobs:
         if: "!matrix.container"
         uses: actions/setup-python@v6
         with:
-          python-version: "3.x"
+          # Not "3.x": htcondor's wheels are per-CPython-version, so a
+          # new Python release breaks `pip install htcondor` until
+          # HTCondor publishes wheels for it. Bump once they do.
+          python-version: "3.14"
 
       # matrix.python defaults to python3 (every non-Windows leg); only the
       # Windows entry above overrides it to `python`.
