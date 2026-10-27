@@ -2,6 +2,8 @@
 
 Experimental dataflow runner built specifically to integrate with HTCondor. HTFlow analyses a set of HTCondor submit (JDL) files, infers file-transfer dependencies between them, and either converts the result into an HTCondor DAGMan file or executes the workflow directly.
 
+**When it's useful:** you already have a set of HTCondor submit files that hand data to one another through `transfer_input_files`/`transfer_output_files`, and you want them run in the right order without hand-writing and maintaining a DAGMan file. HTFlow works out the ordering from the files themselves, so adding or rewiring a step means editing only that step's submit file.
+
 ---
 
 ## Quick Start
